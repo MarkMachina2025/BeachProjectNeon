@@ -33,9 +33,24 @@ export class CoastalFoliage {
   }
 
   private buildPalmTrees(rand: () => number): void {
+    const loader = new THREE.TextureLoader();
+    const barkDiff = loader.load('./textures/wood_Diffuse.jpg');
+    barkDiff.wrapS = barkDiff.wrapT = THREE.RepeatWrapping;
+    barkDiff.repeat.set(2, 6);
+    barkDiff.anisotropy = 8;
+    barkDiff.colorSpace = THREE.SRGBColorSpace;
+
+    const barkNor = loader.load('./textures/wood_nor_gl.jpg');
+    barkNor.wrapS = barkNor.wrapT = THREE.RepeatWrapping;
+    barkNor.repeat.set(2, 6);
+    barkNor.anisotropy = 8;
+
     const trunkMat = new THREE.MeshStandardMaterial({
-      color: 0x7c624a,
-      roughness: 0.92,
+      map: barkDiff,
+      normalMap: barkNor,
+      normalScale: new THREE.Vector2(0.85, 0.85),
+      color: 0xcab39a,
+      roughness: 0.90,
       metalness: 0.0
     });
 
@@ -85,21 +100,30 @@ export class CoastalFoliage {
     // Pre-build an arched pinnate palm frond geometry (central rachis + V-folded leaflets)
     const frondGeo = this.createPalmFrondGeometry();
 
-    // Natural clusters framing the sandy cove dunes
+    // Expanded (+50% wider beach) natural palm groves framing the sweeping sandy dunes
     const palmSpots: Array<[number, number, number, number]> = [
-      [-26, -18, 1.05, 0.3],
-      [-22, -23, 0.92, 1.2],
-      [-15, -24, 1.12, -0.4],
-      [-9, -27, 0.96, 0.8],
-      [-3, -29, 1.08, 2.1],
-      [6, -26, 1.02, -0.8],
-      [13, -24, 1.15, 0.5],
-      [21, -21, 0.94, 1.7],
-      [28, -17, 1.06, -1.2],
-      [-32, -13, 0.88, 0.9],
-      [33, -12, 0.95, -0.6],
-      [-18, -31, 1.18, 2.6],
-      [18, -30, 1.1, 1.1]
+      [-48, -22, 1.06, 0.4],
+      [-42, -29, 1.12, -0.5],
+      [-36, -24, 0.96, 1.1],
+      [-30, -32, 1.14, 0.2],
+      [-24, -27, 1.02, 1.6],
+      [-18, -33, 1.16, -0.7],
+      [-11, -35, 0.98, 0.9],
+      [-4, -37, 1.08, 2.1],
+      [4, -36, 1.12, -0.4],
+      [11, -34, 1.02, 0.6],
+      [18, -31, 1.16, -1.1],
+      [25, -28, 0.96, 1.5],
+      [32, -25, 1.08, 0.2],
+      [39, -29, 1.14, -0.8],
+      [46, -21, 1.04, 1.9],
+      [-52, -16, 0.92, 0.8],
+      [52, -15, 0.98, -0.9],
+      [-28, -42, 1.22, 2.3],
+      [-8, -44, 1.18, -0.2],
+      [14, -43, 1.20, 1.3],
+      [34, -40, 1.15, -1.4],
+      [-44, -38, 1.10, 0.7]
     ];
 
     for (const [px, pz, scale, yaw] of palmSpots) {
@@ -304,19 +328,19 @@ export class CoastalFoliage {
     });
     this.windMaterials.push(grassMat);
 
-    // Scatter 360 tufts across the dunes & sandy back-beach edges
+    // Scatter 540 tufts across the expanded dunes & back-beach crests
     const placements: Array<{ x: number; y: number; z: number; rot: number; scale: number }> = [];
-    for (let i = 0; i < 620 && placements.length < 360; i++) {
-      const x = (rand() - 0.5) * 84;
-      const z = -15 - rand() * 26;
+    for (let i = 0; i < 960 && placements.length < 540; i++) {
+      const x = (rand() - 0.5) * 136;
+      const z = -22 - rand() * 38;
       const h = getTerrainHeight(x, z);
-      if (h < 1.95) continue;
+      if (h < 2.25) continue;
       placements.push({
         x,
         y: h - 0.04,
         z,
         rot: rand() * Math.PI * 2,
-        scale: 0.75 + rand() * 0.85
+        scale: 0.78 + rand() * 0.92
       });
     }
 

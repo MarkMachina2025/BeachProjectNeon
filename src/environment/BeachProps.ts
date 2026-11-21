@@ -81,8 +81,23 @@ export class BeachProps {
   }
 
   private createRockMaterial(baseColorHex: number): CustomShaderMaterial {
+    const loader = new THREE.TextureLoader();
+    const rockDiff = loader.load('./textures/rock_Diffuse.jpg');
+    rockDiff.wrapS = rockDiff.wrapT = THREE.RepeatWrapping;
+    rockDiff.repeat.set(2, 2);
+    rockDiff.anisotropy = 8;
+    rockDiff.colorSpace = THREE.SRGBColorSpace;
+
+    const rockNor = loader.load('./textures/rock_nor_gl.jpg');
+    rockNor.wrapS = rockNor.wrapT = THREE.RepeatWrapping;
+    rockNor.repeat.set(2, 2);
+    rockNor.anisotropy = 8;
+
     const mat = new CustomShaderMaterial({
       baseMaterial: THREE.MeshStandardMaterial,
+      map: rockDiff,
+      normalMap: rockNor,
+      normalScale: new THREE.Vector2(1.0, 1.0),
       color: baseColorHex,
       roughness: 0.86,
       metalness: 0.02,
@@ -160,19 +175,18 @@ export class BeachProps {
     const rockMat = this.createRockMaterial(0x7c746a);
     const reefMat = this.createRockMaterial(0x63665f);
 
-    // Coastal boulders framing left & right coves + picturesque shoreline outcrops
+    // Coastal boulders framing the +50% wider left & right cove headlands
     const coastalRocks: Array<[number, number, number, number, number, number]> = [
-      // [x, z, rx, ry, rz, seed]
-      [-32, -4, 3.6, 2.3, 3.1, 1.2],
-      [-28.5, -0.5, 2.2, 1.5, 2.0, 2.4],
-      [-35, 3, 4.4, 2.8, 3.8, 3.1],
-      [-26, 4.5, 1.6, 1.05, 1.4, 4.5],
-      [31, -3, 3.9, 2.4, 3.3, 5.2],
-      [27.5, 1.2, 2.1, 1.35, 1.9, 6.1],
-      [34.5, 5.5, 4.8, 3.1, 4.0, 7.3],
-      [24.5, 5.8, 1.45, 0.95, 1.3, 8.4],
-      [-18.5, -18.5, 1.8, 1.15, 1.5, 9.2],
-      [20.5, -17.5, 2.0, 1.25, 1.6, 10.1]
+      [-50, -5, 4.4, 2.7, 3.8, 1.2],
+      [-44, 0.5, 2.8, 1.8, 2.5, 2.4],
+      [-54, 4.5, 5.2, 3.2, 4.4, 3.1],
+      [-39, 5.5, 2.0, 1.25, 1.8, 4.5],
+      [48, -4, 4.6, 2.8, 3.9, 5.2],
+      [43, 1.8, 2.6, 1.65, 2.3, 6.1],
+      [53, 7.0, 5.4, 3.4, 4.6, 7.3],
+      [38, 6.8, 1.85, 1.15, 1.7, 8.4],
+      [-28, -26, 2.2, 1.35, 1.9, 9.2],
+      [31, -24, 2.5, 1.45, 2.1, 10.1]
     ];
 
     for (const [x, z, rx, ry, rz, seed] of coastalRocks) {
@@ -190,15 +204,15 @@ export class BeachProps {
 
     // Underwater reef boulders cleanly submerged along the deeper sandbar drop-off for dramatic diving & caustics
     const reefRocks: Array<[number, number, number, number, number, number]> = [
-      [-12, 26, 2.2, 1.25, 2.0, 11.4],
-      [-6, 30, 2.8, 1.6, 2.4, 12.8],
-      [4, 28, 2.4, 1.35, 2.1, 13.5],
-      [11, 33, 3.0, 1.85, 2.6, 14.2],
-      [-1, 36, 3.4, 2.1, 3.0, 15.1],
-      [-16, 34, 2.7, 1.7, 2.4, 16.3],
-      [17, 29, 2.1, 1.2, 1.8, 17.6],
-      [2, 24.5, 1.4, 0.8, 1.3, 18.2],
-      [-9, 23.5, 1.3, 0.75, 1.2, 19.4]
+      [-15, 34, 2.2, 1.25, 2.0, 11.4],
+      [-7, 39, 2.8, 1.6, 2.4, 12.8],
+      [6, 37, 2.4, 1.35, 2.1, 13.5],
+      [14, 42, 3.0, 1.85, 2.6, 14.2],
+      [-2, 46, 3.4, 2.1, 3.0, 15.1],
+      [-20, 44, 2.7, 1.7, 2.4, 16.3],
+      [21, 38, 2.1, 1.2, 1.8, 17.6],
+      [3, 33, 1.4, 0.8, 1.3, 18.2],
+      [-11, 32, 1.3, 0.75, 1.2, 19.4]
     ];
 
     for (const [x, z, rx, ry, rz, seed] of reefRocks) {
@@ -225,11 +239,14 @@ export class BeachProps {
       { a: '#2c4f7c', b: '#f7f4ec', cooler: 0x2da37a, towelA: '#4696c8', towelB: '#f5f5f5' }
     ];
 
+    // Expanded beach setups distributed gracefully across the +50% larger golden beach
     const campConfigs: Array<{ x: number; z: number; yaw: number; hasChair: boolean; hasTowel: boolean; hasCooler: boolean }> = [
-      { x: -13.5, z: -10.5, yaw: 0.28, hasChair: true, hasTowel: true, hasCooler: true },
-      { x: -5.5, z: -12.5, yaw: 0.10, hasChair: false, hasTowel: true, hasCooler: true },
-      { x: 7.5, z: -11.5, yaw: -0.22, hasChair: true, hasTowel: true, hasCooler: true },
-      { x: 15.8, z: -9.8, yaw: -0.35, hasChair: true, hasTowel: false, hasCooler: false }
+      { x: -29.0, z: -13.5, yaw: 0.34, hasChair: true, hasTowel: true, hasCooler: true },
+      { x: -16.5, z: -14.5, yaw: 0.22, hasChair: true, hasTowel: true, hasCooler: true },
+      { x: -6.2, z: -16.2, yaw: 0.08, hasChair: false, hasTowel: true, hasCooler: true },
+      { x: 8.5, z: -14.8, yaw: -0.18, hasChair: true, hasTowel: true, hasCooler: true },
+      { x: 20.5, z: -13.2, yaw: -0.30, hasChair: true, hasTowel: true, hasCooler: false },
+      { x: 31.5, z: -11.8, yaw: -0.40, hasChair: true, hasTowel: false, hasCooler: true }
     ];
 
     campConfigs.forEach((cfg, idx) => {
@@ -577,17 +594,33 @@ export class BeachProps {
   }
 
   private buildDriftwood(): void {
+    const loader = new THREE.TextureLoader();
+    const woodDiff = loader.load('./textures/wood_Diffuse.jpg');
+    woodDiff.wrapS = woodDiff.wrapT = THREE.RepeatWrapping;
+    woodDiff.repeat.set(3, 1);
+    woodDiff.anisotropy = 8;
+    woodDiff.colorSpace = THREE.SRGBColorSpace;
+
+    const woodNor = loader.load('./textures/wood_nor_gl.jpg');
+    woodNor.wrapS = woodNor.wrapT = THREE.RepeatWrapping;
+    woodNor.repeat.set(3, 1);
+    woodNor.anisotropy = 8;
+
     const driftMat = new THREE.MeshStandardMaterial({
-      color: 0xa49684,
-      roughness: 0.94,
+      map: woodDiff,
+      normalMap: woodNor,
+      normalScale: new THREE.Vector2(0.9, 0.9),
+      color: 0xd4c8b8,
+      roughness: 0.92,
       metalness: 0.0
     });
 
     const logs: Array<[number, number, number, number]> = [
-      [-18.5, -5.2, 0.42, 3.2],
-      [18.8, -5.8, -0.58, 3.6],
-      [-2.8, -14.2, 1.25, 2.5],
-      [22.0, -10.5, 0.15, 2.8]
+      [-26.5, -7.2, 0.42, 3.6],
+      [27.8, -7.8, -0.58, 3.8],
+      [-3.4, -18.5, 1.25, 2.8],
+      [34.0, -14.5, 0.15, 3.2],
+      [-36.5, -14.2, -0.35, 3.0]
     ];
 
     for (const [x, z, yaw, len] of logs) {
@@ -649,8 +682,8 @@ export class BeachProps {
 
   private buildFloatingBuoys(): void {
     const buoyCoords: Array<[number, number]> = [
-      [-14, 19],
-      [15, 21]
+      [-20, 24],
+      [21, 26]
     ];
     const orangeMat = new THREE.MeshStandardMaterial({ color: 0xf25c2a, roughness: 0.35 });
     const whiteMat = new THREE.MeshStandardMaterial({ color: 0xf4f7fa, roughness: 0.4 });
@@ -658,15 +691,15 @@ export class BeachProps {
 
     for (const [bx, bz] of buoyCoords) {
       const b = new THREE.Group();
-      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.28, 0.55, 14), orangeMat);
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.28, 0.55, 16), orangeMat);
       base.castShadow = true;
       b.add(base);
 
-      const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.365, 0.34, 0.14, 14), whiteMat);
+      const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.365, 0.34, 0.14, 16), whiteMat);
       stripe.position.y = 0.08;
       b.add(stripe);
 
-      const dome = new THREE.Mesh(new THREE.SphereGeometry(0.35, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), orangeMat);
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(0.35, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2), orangeMat);
       dome.position.y = 0.27;
       dome.castShadow = true;
       b.add(dome);
@@ -679,6 +712,30 @@ export class BeachProps {
       this.group.add(b);
       this.buoys.push({ mesh: b, x: bx, z: bz });
     }
+
+    // Playful floating beach ball & inflatable swim ring bobbing in the crystal shallows
+    const ballMat = new THREE.MeshPhysicalMaterial({
+      map: createStripedTexture('#ff595e', '#ffca3a', 6),
+      roughness: 0.18,
+      clearcoat: 0.8
+    });
+    const beachBall = new THREE.Mesh(new THREE.SphereGeometry(0.28, 18, 14), ballMat);
+    beachBall.castShadow = true;
+    beachBall.position.set(6.5, 0.1, 7.2);
+    this.group.add(beachBall);
+    this.buoys.push({ mesh: beachBall, x: 6.5, z: 7.2 });
+
+    const floatRingMat = new THREE.MeshPhysicalMaterial({
+      map: createStripedTexture('#ff70a6', '#ffffff', 12),
+      roughness: 0.22,
+      clearcoat: 0.75
+    });
+    const floatRing = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.14, 14, 24), floatRingMat);
+    floatRing.rotation.x = Math.PI / 2;
+    floatRing.castShadow = true;
+    floatRing.position.set(-9.5, 0.05, 8.8);
+    this.group.add(floatRing);
+    this.buoys.push({ mesh: floatRing, x: -9.5, z: 8.8 });
   }
 
   public update(

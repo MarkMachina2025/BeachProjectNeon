@@ -4,6 +4,7 @@ import { getTerrainHeight, getTerrainNormal, resolveWorldCollisions } from '../t
 import { sampleWaveHeight } from '../ocean/wavePhysics';
 import { FootprintSystem } from '../terrain/FootprintSystem';
 import { UnderwaterParticles } from '../ocean/UnderwaterParticles';
+import { WaterInteractionSystem } from '../ocean/WaterInteractionSystem';
 import { SoundEngine } from '../audio/SoundEngine';
 
 export type LocomotionMode =
@@ -43,6 +44,8 @@ export class PlayerController {
   private lastMouseX = 0;
   private lastMouseY = 0;
   private bubbleTimer = 0;
+  private wakeRippleTimer = 0;
+  private wasInWater = false;
   private wasCameraUnderwater = false;
 
   private readonly smoothedCamPos = new THREE.Vector3();
@@ -185,6 +188,7 @@ export class PlayerController {
     sunColor: THREE.Color,
     footprints: FootprintSystem,
     particles: UnderwaterParticles,
+    waterFX: WaterInteractionSystem,
     sound: SoundEngine
   ): void {
     const terrainH = getTerrainHeight(this.position.x, this.position.z);
@@ -454,7 +458,25 @@ export class PlayerController {
       sunColor
     );
 
-    // Stamp real player left/right footprints into the RTT sand buffer + trigger granular footstep audio!
+    // Stamp real player left/right footprints into the RTT sand buffer + dynamic water splashes!
+    const inWaterNow = waterDepth > 0.08 && this.position.y < waveH + 0.15;
+    if (inWaterNow && !this.wasInWater) {
+      waterFX.spawnSplash(this.position.x, waveH, this.position.z, 0.95, 16, 1.55);
+      sound.playSplash(0.55);
+    }
+    this.wasInWater = inWaterNow;
+
+    // Continuous subtle contact wake ripples around ankles/waist while standing or moving in water
+    if (inWaterNow) {
+      this.wakeRippleTimer -= dt;
+      const moveSpd = Math.hypot(this.velocity.x, this.velocity.z);
+      const interval = moveSpd > 0.4 ? 0.28 : 0.82;
+      if (this.wakeRippleTimer <= 0) {
+        this.wakeRippleTimer = interval;
+        waterFX.spawnRipple(this.position.x, this.position.z, moveSpd > 0.4 ? 0.72 : 0.42, moveSpd > 0.4 ? 1.35 : 0.95);
+      }
+    }
+
     if (footPlant && !this.isSwimming && this.isGrounded) {
       const footGround = getTerrainHeight(footPlant.worldPos.x, footPlant.worldPos.z);
       const footWaterDepth = Math.max(0, waveH - footGround);
@@ -466,10 +488,19 @@ export class PlayerController {
           this.yaw,
           footPlant.foot === 'right',
           sprint ? 1.0 : 0.92,
-          1.04
+          1.0
         );
-        sound.playFootstep(footWaterDepth > 0.1 ? 'wade' : isWet ? 'wet' : 'dry', sprint ? 1.0 : 0.72);
-        if (footWaterDepth > 0.1) {
+        sound.playFootstep(footWaterDepth > 0.07 ? 'wade' : isWet ? 'wet' : 'dry', sprint ? 1.0 : 0.75);
+        if (footWaterDepth > 0.06) {
+          // Physical water-entry ripple ring + 3D glistening splash spray burst at the exact stepping foot!
+          waterFX.spawnSplash(
+            footPlant.worldPos.x,
+            waveH,
+            footPlant.worldPos.z,
+            sprint ? 1.15 : 0.82,
+            sprint ? 18 : 11,
+            sprint ? 1.65 : 1.30
+          );
           particles.emitBubbles(footPlant.worldPos, 4, 0.25, 0.65);
         }
       }
@@ -478,6 +509,9 @@ export class PlayerController {
     if (swimStroke && this.isSwimming) {
       const underwater = this.cameraSubmersion > 0.02;
       sound.playSwimStroke(underwater, sprint ? 1.0 : 0.7);
+      if (!underwater) {
+        waterFX.spawnSplash(this.position.x, waveH, this.position.z, sprint ? 1.05 : 0.78, sprint ? 14 : 9, 1.55);
+      }
       this._bubbleOrigin.set(
         this.position.x,
         Math.min(waveH - 0.15, this.position.y + 1.0),

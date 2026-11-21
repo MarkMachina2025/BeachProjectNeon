@@ -65,13 +65,13 @@ vec3 computeUnderwaterCaustics(
   float cB = causticLayer(uv1 - vec2(0.025, 0.01), time) * 0.68 +
              causticLayer(uv2 + vec2(0.02, 0.015), time * 1.18) * 0.58;
 
-  // Attenuate cleanly right at waterline and exponentially with depth
-  float surfaceFade = smoothstep(0.0, 0.22, subDepth);
-  float depthAtten = exp(-subDepth * 0.145);
+  // Smooth ramp in shallow ankle water, peak in waist-to-diving depths, attenuate smoothly in deep water
+  float surfaceFade = smoothstep(0.05, 0.62, subDepth);
+  float depthAtten = exp(-subDepth * 0.135);
   float upMask = clamp(dot(worldNormal, refrSun) * 0.75 + 0.35, 0.0, 1.0);
   float sunHeightMask = smoothstep(0.02, 0.28, sunDir.y);
 
   vec3 causticColor = vec3(cR * 0.92, cG * 1.06, cB * 1.14);
-  return causticColor * surfaceFade * depthAtten * upMask * sunHeightMask * 1.15;
+  return causticColor * surfaceFade * depthAtten * upMask * sunHeightMask * 0.82;
 }
 `;

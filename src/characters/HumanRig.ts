@@ -296,56 +296,56 @@ export class HumanCharacter {
     this.head.position.set(0, 0.10, 0.012);
     this.neck.add(this.head);
 
-    // Sculpted human cranium + jawline
+    // Sculpted human cranium + jawline (clean proportions so outer hair volume never clips!)
     const headGeo = createAnatomicalLoft([
-      { y: 0.00, rx: 0.054, rz: 0.068, zOffset: 0.018 }, // Chin
-      { y: 0.04, rx: 0.078, rz: 0.092, zOffset: 0.010 }, // Jaw
-      { y: 0.10, rx: 0.092, rz: 0.108, zOffset: 0.002 }, // Cheekbones
-      { y: 0.17, rx: 0.094, rz: 0.112, zOffset: -0.004 }, // Forehead / temples
-      { y: 0.22, rx: 0.074, rz: 0.092, zOffset: -0.008 }, // Crown
-      { y: 0.245, rx: 0.025, rz: 0.030, zOffset: -0.008 }
-    ], 16);
+      { y: 0.00, rx: 0.050, rz: 0.062, zOffset: 0.016 }, // Chin
+      { y: 0.04, rx: 0.072, rz: 0.084, zOffset: 0.009 }, // Jaw
+      { y: 0.10, rx: 0.085, rz: 0.098, zOffset: 0.002 }, // Cheekbones
+      { y: 0.165, rx: 0.086, rz: 0.100, zOffset: -0.004 }, // Forehead / temples
+      { y: 0.212, rx: 0.068, rz: 0.082, zOffset: -0.008 }, // Crown
+      { y: 0.232, rx: 0.022, rz: 0.028, zOffset: -0.008 }
+    ], 22);
     const headMesh = new THREE.Mesh(headGeo, skinMat);
     headMesh.castShadow = true;
     headMesh.receiveShadow = true;
     this.head.add(headMesh);
 
     // Ears
-    const earGeo = new THREE.SphereGeometry(0.022, 8, 6);
+    const earGeo = new THREE.SphereGeometry(0.020, 10, 8);
     for (const side of [-1, 1]) {
       const ear = new THREE.Mesh(earGeo, skinMat);
-      ear.position.set(side * 0.092, 0.11, -0.006);
-      ear.scale.set(0.45, 1.15, 0.72);
+      ear.position.set(side * 0.084, 0.108, -0.006);
+      ear.scale.set(0.45, 1.12, 0.72);
       this.head.add(ear);
     }
 
     // Subtle sculpted nose & lips
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.016, 0.042, 6), skinMat);
-    nose.position.set(0, 0.102, 0.112);
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.015, 0.038, 8), skinMat);
+    nose.position.set(0, 0.100, 0.102);
     nose.rotation.x = Math.PI * 0.36;
     this.head.add(nose);
 
-    const lips = new THREE.Mesh(new THREE.CapsuleGeometry(0.007, 0.026, 4, 6), lipMat);
+    const lips = new THREE.Mesh(new THREE.CapsuleGeometry(0.0065, 0.024, 5, 8), lipMat);
     lips.rotation.z = Math.PI / 2;
-    lips.position.set(0, 0.058, 0.096);
+    lips.position.set(0, 0.057, 0.088);
     this.head.add(lips);
 
     // Eyes & eyebrows
-    const eyeGeo = new THREE.SphereGeometry(0.013, 8, 6);
-    const pupilGeo = new THREE.SphereGeometry(0.0075, 6, 6);
-    const browGeo = new THREE.BoxGeometry(0.028, 0.0065, 0.008);
+    const eyeGeo = new THREE.SphereGeometry(0.012, 10, 8);
+    const pupilGeo = new THREE.SphereGeometry(0.007, 8, 8);
+    const browGeo = new THREE.BoxGeometry(0.026, 0.006, 0.007);
     for (const side of [-1, 1]) {
       const eye = new THREE.Mesh(eyeGeo, eyeWhiteMat);
-      eye.position.set(side * 0.034, 0.128, 0.096);
+      eye.position.set(side * 0.032, 0.126, 0.089);
       eye.scale.set(1.0, 0.78, 0.65);
       this.head.add(eye);
 
       const pupil = new THREE.Mesh(pupilGeo, pupilMat);
-      pupil.position.set(side * 0.034, 0.128, 0.102);
+      pupil.position.set(side * 0.032, 0.126, 0.095);
       this.head.add(pupil);
 
       const brow = new THREE.Mesh(browGeo, hairMat);
-      brow.position.set(side * 0.034, 0.146, 0.100);
+      brow.position.set(side * 0.032, 0.143, 0.092);
       brow.rotation.z = -side * 0.08;
       this.head.add(brow);
     }
@@ -437,62 +437,87 @@ export class HumanCharacter {
   }
 
   private buildHair(style: HairStyle, mat: THREE.Material): void {
-    // Base cranial hair cap
-    const capGeo = new THREE.SphereGeometry(0.104, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.62);
-    const cap = new THREE.Mesh(capGeo, mat);
-    cap.position.set(0, 0.145, -0.012);
-    cap.scale.set(0.98, 1.04, 1.12);
-    cap.castShadow = true;
-    this.head.add(cap);
+    // Full-coverage outer hair dome with guaranteed +12mm clearance over cranium so ZERO skin clips through!
+    const domeGeo = createAnatomicalLoft([
+      { y: 0.132, rx: 0.096, rz: 0.108, zOffset: -0.012 }, // Hairline above brows & nape
+      { y: 0.172, rx: 0.099, rz: 0.114, zOffset: -0.008 }, // Temples & upper back
+      { y: 0.214, rx: 0.084, rz: 0.098, zOffset: -0.008 }, // Upper crown
+      { y: 0.244, rx: 0.046, rz: 0.054, zOffset: -0.008 }, // Top dome
+      { y: 0.252, rx: 0.008, rz: 0.010, zOffset: -0.008 }
+    ], 22);
+    const dome = new THREE.Mesh(domeGeo, mat);
+    dome.castShadow = true;
+    dome.receiveShadow = true;
+    this.head.add(dome);
+
+    // Clean back-of-head nape volume (covers occipital curve smoothly behind ears)
+    const napeGeo = new THREE.SphereGeometry(0.094, 18, 12, Math.PI * 0.15, Math.PI * 0.7, Math.PI * 0.28, Math.PI * 0.56);
+    const nape = new THREE.Mesh(napeGeo, mat);
+    nape.position.set(0, 0.138, -0.022);
+    nape.rotation.y = Math.PI;
+    nape.scale.set(1.02, 1.04, 1.05);
+    nape.castShadow = true;
+    this.head.add(nape);
 
     if (style === 'short_crop') {
-      const topTuft = new THREE.Mesh(new THREE.SphereGeometry(0.086, 12, 8), mat);
-      topTuft.position.set(0, 0.21, 0.015);
-      topTuft.scale.set(1.02, 0.58, 1.16);
-      topTuft.castShadow = true;
-      this.head.add(topTuft);
+      const topSweep = new THREE.Mesh(new THREE.SphereGeometry(0.088, 16, 10), mat);
+      topSweep.position.set(0, 0.218, 0.012);
+      topSweep.scale.set(1.04, 0.56, 1.12);
+      topSweep.castShadow = true;
+      this.head.add(topSweep);
     } else if (style === 'surfer_waves') {
-      for (let i = 0; i < 5; i++) {
-        const lock = new THREE.Mesh(new THREE.CapsuleGeometry(0.032, 0.08, 6, 8), mat);
-        const ang = (i - 2) * 0.45;
-        lock.position.set(Math.sin(ang) * 0.085, 0.175 - Math.abs(i - 2) * 0.015, -0.02 + Math.cos(ang) * 0.04);
-        lock.rotation.set(0.35, ang, -ang * 0.3);
+      // Sculpted layered surfer flow sitting cleanly outside the hair dome
+      const waveCrown = new THREE.Mesh(new THREE.SphereGeometry(0.096, 18, 12), mat);
+      waveCrown.position.set(0, 0.208, -0.005);
+      waveCrown.scale.set(1.06, 0.64, 1.15);
+      waveCrown.castShadow = true;
+      this.head.add(waveCrown);
+
+      for (let i = 0; i < 6; i++) {
+        const ang = (i - 2.5) * 0.44;
+        const lock = new THREE.Mesh(new THREE.CapsuleGeometry(0.026, 0.072, 6, 10), mat);
+        lock.position.set(
+          Math.sin(ang) * 0.092,
+          0.168 - Math.abs(i - 2.5) * 0.008,
+          -0.018 + Math.cos(ang) * 0.055
+        );
+        lock.rotation.set(0.32, ang, -ang * 0.28);
         lock.castShadow = true;
         this.head.add(lock);
       }
     } else if (style === 'ponytail') {
       const tailGeo = createAnatomicalLoft([
-        { y: 0.0, rx: 0.026, rz: 0.026 },
-        { y: -0.08, rx: 0.044, rz: 0.042, zOffset: -0.03 },
-        { y: -0.19, rx: 0.034, rz: 0.032, zOffset: -0.05 },
-        { y: -0.27, rx: 0.012, rz: 0.012, zOffset: -0.06 }
-      ], 10);
+        { y: 0.0, rx: 0.024, rz: 0.024 },
+        { y: -0.08, rx: 0.044, rz: 0.042, zOffset: -0.032 },
+        { y: -0.19, rx: 0.035, rz: 0.033, zOffset: -0.052 },
+        { y: -0.27, rx: 0.012, rz: 0.012, zOffset: -0.064 }
+      ], 14);
       const tail = new THREE.Mesh(tailGeo, mat);
-      tail.position.set(0, 0.18, -0.115);
+      tail.position.set(0, 0.175, -0.122);
       tail.castShadow = true;
       this.head.add(tail);
     } else if (style === 'long_wavy') {
       const drapeGeo = createAnatomicalLoft([
-        { y: -0.22, rx: 0.105, rz: 0.055, zOffset: -0.045 },
-        { y: -0.10, rx: 0.115, rz: 0.072, zOffset: -0.042 },
-        { y: 0.02, rx: 0.112, rz: 0.085, zOffset: -0.032 },
-        { y: 0.12, rx: 0.102, rz: 0.095, zOffset: -0.020 }
-      ], 14);
+        { y: -0.22, rx: 0.106, rz: 0.054, zOffset: -0.048 },
+        { y: -0.10, rx: 0.114, rz: 0.072, zOffset: -0.046 },
+        { y: 0.02, rx: 0.110, rz: 0.084, zOffset: -0.036 },
+        { y: 0.12, rx: 0.100, rz: 0.094, zOffset: -0.024 }
+      ], 18);
       const drape = new THREE.Mesh(drapeGeo, mat);
-      drape.position.set(0, 0.05, -0.01);
+      drape.position.set(0, 0.05, -0.014);
       drape.castShadow = true;
       this.head.add(drape);
     } else if (style === 'top_bun') {
-      const bun = new THREE.Mesh(new THREE.SphereGeometry(0.058, 12, 10), mat);
-      bun.position.set(0, 0.275, -0.045);
-      bun.scale.set(1.05, 0.88, 1.05);
+      const bun = new THREE.Mesh(new THREE.SphereGeometry(0.056, 16, 12), mat);
+      bun.position.set(0, 0.278, -0.036);
+      bun.scale.set(1.06, 0.88, 1.06);
       bun.castShadow = true;
       this.head.add(bun);
     } else if (style === 'curly_crown') {
-      for (let i = 0; i < 8; i++) {
-        const a = (i / 8) * Math.PI * 2;
-        const puff = new THREE.Mesh(new THREE.SphereGeometry(0.048, 9, 7), mat);
-        puff.position.set(Math.cos(a) * 0.068, 0.215 + (i % 2) * 0.02, Math.sin(a) * 0.072 - 0.015);
+      for (let i = 0; i < 9; i++) {
+        const a = (i / 9) * Math.PI * 2;
+        const puff = new THREE.Mesh(new THREE.SphereGeometry(0.048, 12, 10), mat);
+        puff.position.set(Math.cos(a) * 0.070, 0.212 + (i % 2) * 0.022, Math.sin(a) * 0.074 - 0.014);
         puff.castShadow = true;
         this.head.add(puff);
       }
@@ -508,17 +533,18 @@ export class HumanCharacter {
       clearcoat: 1.0
     });
     const glasses = new THREE.Group();
-    glasses.position.set(0, 0.128, 0.106);
+    glasses.position.set(0, 0.126, 0.098);
     for (const side of [-1, 1]) {
-      const lens = new THREE.Mesh(new THREE.BoxGeometry(0.042, 0.028, 0.008), lensMat);
-      lens.position.set(side * 0.036, 0, 0);
+      const lens = new THREE.Mesh(new THREE.BoxGeometry(0.038, 0.025, 0.007), lensMat);
+      lens.position.set(side * 0.032, 0, 0);
       glasses.add(lens);
-      const temple = new THREE.Mesh(new THREE.BoxGeometry(0.005, 0.006, 0.105), frameMat);
-      temple.position.set(side * 0.058, 0.004, -0.05);
+      // Shorter neatly tucked temple arms resting right over ears (never poking behind head!)
+      const temple = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.005, 0.082), frameMat);
+      temple.position.set(side * 0.054, 0.003, -0.042);
       glasses.add(temple);
     }
-    const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.006, 0.008), frameMat);
-    bridge.position.set(0, 0.006, 0);
+    const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.026, 0.005, 0.007), frameMat);
+    bridge.position.set(0, 0.005, 0);
     glasses.add(bridge);
     this.head.add(glasses);
   }

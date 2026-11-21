@@ -1,18 +1,20 @@
 import * as THREE from 'three';
 import { GERSTNER_GLSL } from './wavePhysics';
 import { TERRAIN_HEIGHT_GLSL } from '../terrain/terrainMath';
+import { OceanSystem } from './OceanSystem';
 
 /**
- * High-Fidelity Multi-Stage Post-Processing & Anti-Aliasing Pipeline:
- *  Stage 1 (sceneRT): Supersampled HDR + DepthTexture 3D scene render
+ * High-Fidelity Multi-Stage Post-Processing, True Water Refraction & Anti-Aliasing Pipeline:
+ *  Stage 0 (refractTarget): Pre-water opaque scene + depth capture for true wave-normal refraction
+ *  Stage 1 (sceneRT): Supersampled HDR + DepthTexture full 3D scene render (including refracting ocean)
  *  Stage 2 (compositeRT): Seamless GTA V-style Gerstner waterline meniscus, Beer-Lambert
  *    underwater fog, depth-weighted optical softening, edge chromatic aberration, silky
  *    volumetric god rays, subtle HDR bloom/halation, ACES Filmic tone mapping & sRGB + Luma
- *  Stage 3 (FXAA 3.11 Quality Pass): Full edge-span search & sub-pixel anti-aliasing
- *    eliminating jagged staircase edges across characters, props, shoreline, and horizon!
+ *  Stage 3 (FXAA 3.11 Quality Pass): Full edge-span search & sub-pixel anti-aliasing!
  */
 export class UnderwaterPostProcess {
   public readonly renderTarget: THREE.WebGLRenderTarget;
+  private readonly refractTarget: THREE.WebGLRenderTarget;
   private readonly compositeTarget: THREE.WebGLRenderTarget;
 
   private readonly postScene: THREE.Scene;
@@ -45,6 +47,19 @@ export class UnderwaterPostProcess {
       type: useHalfFloat ? THREE.HalfFloatType : THREE.UnsignedByteType,
       depthBuffer: true,
       depthTexture
+    });
+
+    const refractDepth = new THREE.DepthTexture(rtW, rtH);
+    refractDepth.type = THREE.UnsignedIntType;
+    refractDepth.format = THREE.DepthFormat;
+
+    this.refractTarget = new THREE.WebGLRenderTarget(rtW, rtH, {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      type: useHalfFloat ? THREE.HalfFloatType : THREE.UnsignedByteType,
+      depthBuffer: true,
+      depthTexture: refractDepth
     });
 
     this.compositeTarget = new THREE.WebGLRenderTarget(rtW, rtH, {
@@ -514,6 +529,7 @@ export class UnderwaterPostProcess {
   public setSize(width: number, height: number): void {
     const { rtW, rtH } = this.computeTargetSize(width, height);
     this.renderTarget.setSize(rtW, rtH);
+    this.refractTarget.setSize(rtW, rtH);
     this.compositeTarget.setSize(rtW, rtH);
     this.postMaterial.uniforms.uResolution.value.set(rtW, rtH);
     this.fxaaMaterial.uniforms.uTexelSize.value.set(1 / rtW, 1 / rtH);
@@ -523,12 +539,27 @@ export class UnderwaterPostProcess {
     renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
+    ocean: OceanSystem,
     elapsedTime: number,
     waveIntensity: number,
     sunDirection: THREE.Vector3,
     sunColor: THREE.Color
   ): void {
-    // Stage 1: Render supersampled 3D scene into HDR color + depth target
+    // Stage 0: Capture pre-water scene color & depth for true optical ocean refraction
+    ocean.mesh.visible = false;
+    renderer.setRenderTarget(this.refractTarget);
+    renderer.clear(true, true, false);
+    renderer.render(scene, camera);
+    ocean.mesh.visible = true;
+
+    ocean.setRefractionTextures(
+      this.refractTarget.texture,
+      this.refractTarget.depthTexture,
+      this.renderTarget.width,
+      this.renderTarget.height
+    );
+
+    // Stage 1: Render supersampled 3D scene (with refracting ocean & splashes) into HDR + depth target
     renderer.setRenderTarget(this.renderTarget);
     renderer.clear(true, true, false);
     renderer.render(scene, camera);
@@ -560,6 +591,8 @@ export class UnderwaterPostProcess {
   public dispose(): void {
     this.renderTarget.depthTexture?.dispose();
     this.renderTarget.dispose();
+    this.refractTarget.depthTexture?.dispose();
+    this.refractTarget.dispose();
     this.compositeTarget.dispose();
     this.postMaterial.dispose();
     this.fxaaMaterial.dispose();

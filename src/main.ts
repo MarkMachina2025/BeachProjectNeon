@@ -7,6 +7,7 @@ import { CoastalTerrain } from './terrain/CoastalTerrain';
 import { OceanSystem } from './ocean/OceanSystem';
 import { UnderwaterPostProcess } from './ocean/UnderwaterPostProcess';
 import { UnderwaterParticles } from './ocean/UnderwaterParticles';
+import { WaterInteractionSystem } from './ocean/WaterInteractionSystem';
 import { AtmosphereSystem } from './environment/AtmosphereSystem';
 import { CoastalFoliage } from './environment/CoastalFoliage';
 import { BeachProps } from './environment/BeachProps';
@@ -64,9 +65,12 @@ function bootstrap(): void {
   const ocean = new OceanSystem();
   scene.add(ocean.mesh);
 
-  // 7. Underwater Suspended Plankton Motes & Rising 3D Bubble Streams
+  // 7. Underwater Suspended Plankton Motes, Rising 3D Bubbles & Surface Water Splashes/Ripples
   const particles = new UnderwaterParticles();
   scene.add(particles.group);
+
+  const waterFX = new WaterInteractionSystem();
+  scene.add(waterFX.group);
 
   // 8. 8 Human Beach NPCs (Sunbathers, Lounger, Chatting Pair, 3 Shoreline Walkers/Waders)
   const npcs = new NpcManager(props.restSpots);
@@ -131,7 +135,7 @@ function bootstrap(): void {
     const sunDir = atmosphere.sunDirection;
     const sunCol = atmosphere.sunColor;
 
-    // Update player physics, animation, footprints & spring-arm camera
+    // Update player physics, animation, footprints, water splashes & spring-arm camera
     player.update(
       dt,
       elapsedTime,
@@ -141,10 +145,11 @@ function bootstrap(): void {
       sunCol,
       footprints,
       particles,
+      waterFX,
       sound
     );
 
-    // Update 8 NPCs (sunbathing, lounging, chatting, shoreline walking/wading + footprints)
+    // Update 10 NPCs (sunbathing, lounging, chatting, water play, shoreline walking/wading + footprints)
     npcs.update(
       dt,
       elapsedTime,
@@ -153,13 +158,14 @@ function bootstrap(): void {
       sunCol,
       footprints,
       particles,
+      waterFX,
       player.position
     );
 
     // Update RTT sand footprint decay & wave-wash smoothing + stamp newly queued prints
     footprints.update(renderer, dt, elapsedTime, waveIntensity);
 
-    // Update terrain, ocean, foliage, props, atmosphere, underwater particles
+    // Update terrain, ocean, foliage, props, atmosphere, underwater particles & water splash FX
     terrain.update(footprints.texture, elapsedTime, waveIntensity, sunDir, sunCol);
     ocean.update(
       elapsedTime,
@@ -174,15 +180,16 @@ function bootstrap(): void {
     props.update(elapsedTime, waveIntensity, sunDir, sunCol);
     atmosphere.update(elapsedTime, player.position);
     particles.update(dt, elapsedTime, camera.position, waveIntensity, sunDir, sunCol);
+    waterFX.update(dt, elapsedTime, waveIntensity);
 
     // Update Web Audio spatial engine (synced to wave cycle & camera submergence)
     const camTerrain = getTerrainHeight(camera.position.x, camera.position.z);
     const waveInfo = sampleWave(camera.position.x, camera.position.z, elapsedTime, waveIntensity, camTerrain);
-    const shoreProx = 1.0 - THREE.MathUtils.clamp(Math.abs(camera.position.z) / 36.0, 0, 1);
+    const shoreProx = 1.0 - THREE.MathUtils.clamp(Math.abs(camera.position.z) / 52.0, 0, 1);
     sound.update(dt, elapsedTime, player.cameraSubmersion, waveInfo.swellPhase, waveIntensity, shoreProx);
 
-    // Render HDR scene + seamless GTA-style waterline meniscus + underwater god rays & optics
-    postProcess.render(renderer, scene, camera, elapsedTime, waveIntensity, sunDir, sunCol);
+    // Render refraction pre-pass + HDR scene + seamless waterline meniscus + underwater optics + FXAA 3.11
+    postProcess.render(renderer, scene, camera, ocean, elapsedTime, waveIntensity, sunDir, sunCol);
 
     // Refresh HUD telemetry cleanly at ~15Hz
     hudAccum += dt;

@@ -23,53 +23,52 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
 }
 
 /**
- * Deterministic sculpted crescent bay heightfield.
- * -z: inland beach & dunes | 0: shoreline | +z: shallow sandbar & seabed drop-off
- * Matches TERRAIN_HEIGHT_GLSL below so water depth absorption, shore foam, and
- * wet-sand transition align seamlessly with the 3D terrain mesh.
+ * Expanded (+50% larger) sculpted crescent coastal bay heightfield.
+ * Playable sandy cove spans ~172m wide (X: [-86, +86]), deep golden beach & dunes
+ * inland to Z = -64, and gradual sandbar -> deep diving reef out to Z = +118.
+ * Matches TERRAIN_HEIGHT_GLSL below for exact water depth absorption & wet shoreline sync.
  */
 export function getTerrainHeight(x: number, z: number): number {
-  // Crescent cove shoreline curve (pushes seaward on flanks)
-  const bayCurve = 0.0042 * x * x - 1.15 * Math.sin(x * 0.065) - 0.55 * Math.cos(x * 0.13);
+  // Broad sweeping crescent cove curve (~50% wider bay)
+  const bayCurve = 0.0022 * x * x - 1.35 * Math.sin(x * 0.044) - 0.65 * Math.cos(x * 0.09);
   const s = z - bayCurve; // signed distance seaward from nominal waterline
 
   let h = 0;
 
   if (s < 0) {
-    // Beach slope inland: gentle foreshore rising into sculpted rolling dunes
+    // Expansive sunlit foreshore & wide golden beach rising into rolling coastal dunes
     const d = -s;
-    const beachSlope = d * 0.105 + 0.0014 * d * d;
-    const duneEnvelope = smoothstep(14.0, 34.0, d);
+    const beachSlope = d * 0.088 + 0.00085 * d * d;
+    const duneEnvelope = smoothstep(22.0, 48.0, d);
     const dunes =
       duneEnvelope *
-      (2.4 +
-        1.55 * Math.sin(x * 0.085 + 0.7) * Math.cos(z * 0.095) +
-        0.95 * Math.sin(x * 0.17 - z * 0.12) +
-        0.45 * Math.cos(x * 0.29 + z * 0.21));
+      (2.9 +
+        1.75 * Math.sin(x * 0.065 + 0.7) * Math.cos(z * 0.075) +
+        1.05 * Math.sin(x * 0.13 - z * 0.10) +
+        0.48 * Math.cos(x * 0.24 + z * 0.18));
     h = beachSlope + dunes;
   } else {
-    // Seaward profile: smooth wading slope -> gentle sandbar -> deep seabed drop-off
-    const shallowSlope = -s * 0.082;
-    const sandbar = 0.42 * Math.exp(-Math.pow((s - 13.5) / 5.4, 2));
-    const dropoff = -11.8 * smoothstep(17.0, 62.0, s) - 4.0 * smoothstep(62.0, 125.0, s);
-    // Subtle organic seabed undulations & reef mounds
+    // Seaward profile: broad crystal wading shallows -> gentle sandbar -> deep reef drop-off
+    const shallowSlope = -s * 0.072;
+    const sandbar = 0.48 * Math.exp(-Math.pow((s - 18.0) / 7.2, 2));
+    const dropoff = -12.8 * smoothstep(23.0, 78.0, s) - 4.5 * smoothstep(78.0, 155.0, s);
     const seabedMounds =
-      smoothstep(8.0, 26.0, s) *
-      (0.45 * Math.sin(x * 0.12 + z * 0.11) + 0.28 * Math.cos(x * 0.21 - z * 0.18));
+      smoothstep(10.0, 32.0, s) *
+      (0.52 * Math.sin(x * 0.10 + z * 0.095) + 0.30 * Math.cos(x * 0.19 - z * 0.16));
     h = shallowSlope + sandbar + dropoff + seabedMounds;
   }
 
-  // Flanking coastal headlands at |x| > 36
-  const flankMask = smoothstep(34.0, 66.0, Math.abs(x)) * (1.0 - smoothstep(26.0, 62.0, s));
+  // Flanking coastal sandstone headlands at |x| > 54 framing the larger cove
+  const flankMask = smoothstep(52.0, 96.0, Math.abs(x)) * (1.0 - smoothstep(36.0, 84.0, s));
   const headland =
     flankMask *
-    (5.2 + 1.8 * Math.sin(x * 0.14 + z * 0.16) + 0.9 * Math.cos(x * 0.28 - z * 0.22));
+    (6.2 + 2.1 * Math.sin(x * 0.11 + z * 0.13) + 1.0 * Math.cos(x * 0.24 - z * 0.19));
   h += headland;
 
-  // Fine natural beach micro-undulation
+  // Fine natural coastal sand undulation
   const micro =
-    0.09 * Math.sin(x * 0.24 + z * 0.19) +
-    0.045 * Math.cos(x * 0.51 - z * 0.43);
+    0.085 * Math.sin(x * 0.21 + z * 0.17) +
+    0.042 * Math.cos(x * 0.46 - z * 0.39);
   h += micro;
 
   return h;
@@ -111,53 +110,53 @@ export function resolveWorldCollisions(
     }
   }
 
-  // Keep actor inside playable cove perimeter
-  pos.x = THREE.MathUtils.clamp(pos.x, -56, 56);
-  pos.z = THREE.MathUtils.clamp(pos.z, -42, 78);
+  // Expanded (+50%) playable cove perimeter
+  pos.x = THREE.MathUtils.clamp(pos.x, -84, 84);
+  pos.z = THREE.MathUtils.clamp(pos.z, -62, 112);
 }
 
 /**
- * Matching GLSL terrain height function so the Ocean shader and Footprint RTT
- * decay shader know the exact seabed/beach elevation at any world (x, z).
+ * Matching GLSL terrain height function for Ocean depth absorption, shore foam,
+ * waterline intersection, and Footprint RTT wave-wash decay.
  */
 export const TERRAIN_HEIGHT_GLSL = /* glsl */ `
 float getTerrainHeightGLSL(vec2 xz) {
   float x = xz.x;
   float z = xz.y;
-  float bayCurve = 0.0042 * x * x - 1.15 * sin(x * 0.065) - 0.55 * cos(x * 0.13);
+  float bayCurve = 0.0022 * x * x - 1.35 * sin(x * 0.044) - 0.65 * cos(x * 0.09);
   float s = z - bayCurve;
   float h = 0.0;
 
   if (s < 0.0) {
     float d = -s;
-    float beachSlope = d * 0.105 + 0.0014 * d * d;
-    float duneEnvelope = smoothstep(14.0, 34.0, d);
+    float beachSlope = d * 0.088 + 0.00085 * d * d;
+    float duneEnvelope = smoothstep(22.0, 48.0, d);
     float dunes = duneEnvelope * (
-      2.4 +
-      1.55 * sin(x * 0.085 + 0.7) * cos(z * 0.095) +
-      0.95 * sin(x * 0.17 - z * 0.12) +
-      0.45 * cos(x * 0.29 + z * 0.21)
+      2.9 +
+      1.75 * sin(x * 0.065 + 0.7) * cos(z * 0.075) +
+      1.05 * sin(x * 0.13 - z * 0.10) +
+      0.48 * cos(x * 0.24 + z * 0.18)
     );
     h = beachSlope + dunes;
   } else {
-    float shallowSlope = -s * 0.082;
-    float sd = (s - 13.5) / 5.4;
-    float sandbar = 0.42 * exp(-sd * sd);
-    float dropoff = -11.8 * smoothstep(17.0, 62.0, s) - 4.0 * smoothstep(62.0, 125.0, s);
-    float seabedMounds = smoothstep(8.0, 26.0, s) * (
-      0.45 * sin(x * 0.12 + z * 0.11) +
-      0.28 * cos(x * 0.21 - z * 0.18)
+    float shallowSlope = -s * 0.072;
+    float sd = (s - 18.0) / 7.2;
+    float sandbar = 0.48 * exp(-sd * sd);
+    float dropoff = -12.8 * smoothstep(23.0, 78.0, s) - 4.5 * smoothstep(78.0, 155.0, s);
+    float seabedMounds = smoothstep(10.0, 32.0, s) * (
+      0.52 * sin(x * 0.10 + z * 0.095) +
+      0.30 * cos(x * 0.19 - z * 0.16)
     );
     h = shallowSlope + sandbar + dropoff + seabedMounds;
   }
 
-  float flankMask = smoothstep(34.0, 66.0, abs(x)) * (1.0 - smoothstep(26.0, 62.0, s));
+  float flankMask = smoothstep(52.0, 96.0, abs(x)) * (1.0 - smoothstep(36.0, 84.0, s));
   float headland = flankMask * (
-    5.2 + 1.8 * sin(x * 0.14 + z * 0.16) + 0.9 * cos(x * 0.28 - z * 0.22)
+    6.2 + 2.1 * sin(x * 0.11 + z * 0.13) + 1.0 * cos(x * 0.24 - z * 0.19)
   );
   h += headland;
 
-  float micro = 0.09 * sin(x * 0.24 + z * 0.19) + 0.045 * cos(x * 0.51 - z * 0.43);
+  float micro = 0.085 * sin(x * 0.21 + z * 0.17) + 0.042 * cos(x * 0.46 - z * 0.39);
   return h + micro;
 }
 `;

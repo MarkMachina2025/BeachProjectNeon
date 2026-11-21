@@ -3,17 +3,18 @@ import { TERRAIN_HEIGHT_GLSL } from './terrainMath';
 import { GERSTNER_GLSL } from '../ocean/wavePhysics';
 
 /**
- * Playable beach & shallow wading footprint deformation zone in world space.
- * Covers X in [-48, +48] (96m) and Z in [-38, +26] (64m).
+ * Expanded (+50%) playable beach & shallow wading footprint deformation zone.
+ * Uses 2048x2048 RTT resolution so anatomically accurate ~27cm human footprints
+ * render crisp, detailed, and realistic across the entire wide beach!
  */
 export const FOOTPRINT_BOUNDS = {
-  minX: -48,
-  maxX: 48,
-  minZ: -38,
-  maxZ: 26,
-  width: 96,
-  depth: 64,
-  resolution: 1024
+  minX: -72,
+  maxX: 72,
+  minZ: -56,
+  maxZ: 36,
+  width: 144,
+  depth: 92,
+  resolution: 2048
 };
 
 interface QueuedStamp {
@@ -26,11 +27,10 @@ interface QueuedStamp {
 }
 
 /**
- * Real-time Render-to-Texture (RTT) ping-pong sand deformation system.
- * - Stores R = footprint cavity depth (0..1), G = displaced sand rim (0..1), B = recent wet-wash factor
- * - Stamps anatomically shaped left/right heel-to-toe impressions for Player and NPCs
- * - Runs a GPU wave-wash & smoothing decay pass each frame so wet shoreline prints
- *   smooth and fade rapidly when waves wash over them while dry sand prints persist long.
+ * Real-time Render-to-Texture (RTT) 2048x2048 ping-pong sand deformation system.
+ * - Realistic human foot proportions (~11cm wide x ~27cm long bare impression)
+ * - R = recessed footprint cavity, G = displaced outer sand ridge, B = wave-wetness memory
+ * - Wet/wave-washed shoreline footprints smooth & fade rapidly; dry prints persist long.
  */
 export class FootprintSystem {
   private rtA: THREE.WebGLRenderTarget;
@@ -80,7 +80,6 @@ export class FootprintSystem {
     this.readTarget = this.rtA;
     this.writeTarget = this.rtB;
 
-    // Clear both targets to 0
     const prevTarget = renderer.getRenderTarget();
     const prevClearColor = new THREE.Color();
     renderer.getClearColor(prevClearColor);
@@ -95,7 +94,7 @@ export class FootprintSystem {
     renderer.setRenderTarget(prevTarget);
     renderer.setClearColor(prevClearColor, prevClearAlpha);
 
-    // Full-screen decay / wave-wash smoothing pass
+    // Ping-pong wave-wash smoothing & decay pass
     this.decayScene = new THREE.Scene();
     this.decayCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
     this.decayMaterial = new THREE.ShaderMaterial({
@@ -133,20 +132,15 @@ export class FootprintSystem {
         void main() {
           vec4 cur = texture2D(uPrevMap, vUv);
 
-          // Map texel UV back to world (x, z)
           vec2 worldXZ = uBoundsMin + vUv * uBoundsSize;
           float terrainH = getTerrainHeightGLSL(worldXZ);
           float shoal = waveShoalingFactorGLSL(terrainH);
           float waveH = evalWaveHeightApprox(worldXZ, uTime, uWaveIntensity, shoal);
 
-          // Active wave wash-over depth
           float washDepth = waveH - terrainH;
           float washedNow = smoothstep(-0.04, 0.14, washDepth);
-
-          // Damp/wet shoreline zone even between wave surges
           float dampZone = smoothstep(0.68, 0.08, terrainH);
 
-          // 5-tap diffusion kernel for wave smoothing
           vec4 nL = texture2D(uPrevMap, vUv - vec2(uTexelSize.x, 0.0));
           vec4 nR = texture2D(uPrevMap, vUv + vec2(uTexelSize.x, 0.0));
           vec4 nD = texture2D(uPrevMap, vUv - vec2(0.0, uTexelSize.y));
@@ -154,15 +148,14 @@ export class FootprintSystem {
           vec4 avg = (nL + nR + nD + nU) * 0.25;
 
           // Smooth prints quickly when waves wash over them; barely blur on dry sand
-          float diffuseRate = (washedNow * 3.8 + dampZone * 0.16) * uDt;
+          float diffuseRate = (washedNow * 4.2 + dampZone * 0.18) * uDt;
           vec2 rg = mix(cur.rg, avg.rg, clamp(diffuseRate, 0.0, 0.55));
 
-          // Decay rate: fast when washed by waves (~4-7s), moderate in wet sand, very slow in dry sand (~140s)
-          float decayRate = 0.007 + dampZone * 0.032 + washedNow * 0.34;
+          // Fast fade when washed by waves (~4-7s), moderate in damp sand, persistent in dry sand (~140s)
+          float decayRate = 0.007 + dampZone * 0.032 + washedNow * 0.38;
           rg *= exp(-decayRate * uDt);
           rg = max(rg - vec2(0.00015 * uDt), vec2(0.0));
 
-          // B channel tracks recent wave wetness memory for realistic wet-sand darkening
           float wetMem = max(cur.b * exp(-0.055 * uDt), washedNow);
           gl_FragColor = vec4(rg, wetMem, 1.0);
         }
@@ -183,7 +176,6 @@ export class FootprintSystem {
     );
     this.stampCamera.position.set(0, 0, 2);
 
-    // Procedural anatomical heel-to-toe footprint stamp shader (left/right mirrorable)
     this.stampMaterial = new THREE.ShaderMaterial({
       transparent: true,
       depthTest: false,
@@ -214,50 +206,40 @@ export class FootprintSystem {
         }
 
         void main() {
-          // Map UV to [-1, 1], y = +1 is toe, y = -1 is heel
           vec2 p = vUv * 2.0 - 1.0;
-          // Mirror X for left vs right foot (inner arch is toward -x for right foot)
           p.x *= (uIsRight > 0.5 ? 1.0 : -1.0);
 
-          // Heel impression
-          float dHeel = sdEllipse(p, vec2(0.04, -0.52), vec2(0.32, 0.34));
-          // Midfoot / lateral edge (slightly curved inward for natural arch)
-          float dMid = sdEllipse(p, vec2(0.11, -0.08), vec2(0.24, 0.34));
-          // Forefoot / ball of foot
-          float dBall = sdEllipse(p, vec2(-0.02, 0.31), vec2(0.39, 0.30));
+          // Compact anatomical human barefoot proportions (heel -> narrow arch -> ball -> 5 toes)
+          float dHeel = sdEllipse(p, vec2(0.04, -0.48), vec2(0.30, 0.30));
+          float dMid  = sdEllipse(p, vec2(0.11, -0.06), vec2(0.22, 0.31));
+          float dBall = sdEllipse(p, vec2(-0.02, 0.28), vec2(0.37, 0.27));
 
-          // Smooth union of heel, arch-side midfoot, and ball
-          float k = 0.22;
+          float k = 0.20;
           float h1 = clamp(0.5 + 0.5 * (dMid - dHeel) / k, 0.0, 1.0);
           float dSole = mix(dMid, dHeel, h1) - k * h1 * (1.0 - h1);
           float h2 = clamp(0.5 + 0.5 * (dBall - dSole) / k, 0.0, 1.0);
           dSole = mix(dBall, dSole, h2) - k * h2 * (1.0 - h2);
 
-          // Subtract subtle medial arch indent
-          float dArch = sdEllipse(p, vec2(-0.34, -0.08), vec2(0.20, 0.28));
+          float dArch = sdEllipse(p, vec2(-0.34, -0.06), vec2(0.21, 0.26));
           dSole = max(dSole, -dArch * 0.72);
 
-          // Five distinct toes across top of print
-          float dToe1 = sdEllipse(p, vec2(-0.24, 0.74), vec2(0.135, 0.145)); // Big toe
-          float dToe2 = sdEllipse(p, vec2(-0.04, 0.78), vec2(0.095, 0.115));
-          float dToe3 = sdEllipse(p, vec2(0.12, 0.74),  vec2(0.085, 0.10));
-          float dToe4 = sdEllipse(p, vec2(0.25, 0.67),  vec2(0.075, 0.09));
-          float dToe5 = sdEllipse(p, vec2(0.35, 0.57),  vec2(0.068, 0.08));
+          float dToe1 = sdEllipse(p, vec2(-0.23, 0.68), vec2(0.13, 0.13));
+          float dToe2 = sdEllipse(p, vec2(-0.04, 0.72), vec2(0.09, 0.10));
+          float dToe3 = sdEllipse(p, vec2(0.12, 0.68),  vec2(0.08, 0.09));
+          float dToe4 = sdEllipse(p, vec2(0.24, 0.61),  vec2(0.072, 0.08));
+          float dToe5 = sdEllipse(p, vec2(0.34, 0.52),  vec2(0.064, 0.07));
           float dToes = min(min(min(dToe1, dToe2), min(dToe3, dToe4)), dToe5);
 
           float dFoot = min(dSole, dToes);
 
-          // Deepest cavity at heel and ball of foot
-          float cavity = smoothstep(0.06, -0.14, dFoot);
-          float heelWeight = 0.82 + 0.25 * smoothstep(-0.15, -0.65, p.y);
-          float ballWeight = 0.85 + 0.22 * smoothstep(0.0, 0.45, p.y);
+          float cavity = smoothstep(0.07, -0.13, dFoot);
+          float heelWeight = 0.84 + 0.24 * smoothstep(-0.12, -0.60, p.y);
+          float ballWeight = 0.86 + 0.20 * smoothstep(0.0, 0.42, p.y);
           float depthVal = clamp(cavity * max(heelWeight, ballWeight) * uStrength, 0.0, 1.0);
 
-          // Raised displaced sand ridge hugging the outer rim of the footprint
-          float rim = exp(-pow((dFoot - 0.12) / 0.14, 2.0)) * 0.65 * uStrength;
+          float rim = exp(-pow((dFoot - 0.14) / 0.14, 2.0)) * 0.68 * uStrength;
 
-          // Edge fade so quad boundary never clips
-          float boxFade = smoothstep(1.0, 0.86, max(abs(p.x), abs(p.y)));
+          float boxFade = smoothstep(1.0, 0.84, max(abs(p.x), abs(p.y)));
           depthVal *= boxFade;
           rim *= boxFade;
 
@@ -267,8 +249,8 @@ export class FootprintSystem {
       `
     });
 
-    // World size of a single human footprint stamp quad (~0.42m wide x 0.68m long including rim)
-    const stampGeo = new THREE.PlaneGeometry(0.46, 0.74);
+    // Realistic adult human foot stamp quad: 0.21m wide x 0.36m long (recessed sole = ~11cm x 27cm!)
+    const stampGeo = new THREE.PlaneGeometry(0.21, 0.36);
     this.stampMesh = new THREE.Mesh(stampGeo, this.stampMaterial);
     this.stampScene.add(this.stampMesh);
   }
@@ -281,9 +263,6 @@ export class FootprintSystem {
     return this.totalStamps;
   }
 
-  /**
-   * Queue a footprint stamp at world (x, z) oriented along yaw (radians, 0 = +Z forward).
-   */
   public stamp(
     x: number,
     z: number,
@@ -304,9 +283,6 @@ export class FootprintSystem {
     this.totalStamps++;
   }
 
-  /**
-   * Runs the ping-pong decay/wave-wash pass and stamps any newly queued footsteps.
-   */
   public update(
     renderer: THREE.WebGLRenderer,
     dt: number,
@@ -316,7 +292,6 @@ export class FootprintSystem {
     const prevTarget = renderer.getRenderTarget();
     const prevAutoClear = renderer.autoClear;
 
-    // 1. Decay & wave-wash smoothing pass (readTarget -> writeTarget)
     this.decayMaterial.uniforms.uPrevMap.value = this.readTarget.texture;
     this.decayMaterial.uniforms.uTime.value = elapsedTime;
     this.decayMaterial.uniforms.uDt.value = dt;
@@ -326,14 +301,9 @@ export class FootprintSystem {
     renderer.setRenderTarget(this.writeTarget);
     renderer.render(this.decayScene, this.decayCamera);
 
-    // 2. Render queued footprint stamps directly onto writeTarget using Max blending
     if (this.queue.length > 0) {
       for (let i = 0; i < this.queue.length; i++) {
         const s = this.queue[i];
-        // Note: stampCamera looks from +Z(local) onto XY where camera X=worldX, camera Y=worldZ
-        // Wait: OrthographicCamera top=maxZ, bottom=minZ => camera +Y corresponds to world +Z!
-        // When character faces yaw (dir = (sin(yaw), cos(yaw)) in XZ), plane local +Y (toes)
-        // must rotate by -yaw around camera Z so local (0, 1) -> (sin(yaw), cos(yaw))!
         this.stampMesh.position.set(s.x, s.z, 0);
         this.stampMesh.rotation.set(0, 0, -s.yaw);
         this.stampMesh.scale.set(s.scale, s.scale, 1);
@@ -344,7 +314,6 @@ export class FootprintSystem {
       this.queue.length = 0;
     }
 
-    // Swap ping-pong buffers
     const tmp = this.readTarget;
     this.readTarget = this.writeTarget;
     this.writeTarget = tmp;
