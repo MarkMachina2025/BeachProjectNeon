@@ -8,75 +8,219 @@
       type="image/svg+xml"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23168aad'/%3E%3Cpath d='M4 20 Q10 14 16 19 T28 18 L28 28 L4 28 Z' fill='%2338e2d8'/%3E%3C/svg%3E"
     />
-    <title>Neon Cove — Coastal &amp; Underwater 3D Tech Demo</title>
+    <title>Neon Cove — Coastal &amp; Underwater 3D World</title>
   </head>
   <body>
     <canvas id="scene-canvas"></canvas>
 
-    <div id="hud-root" class="hud-root">
-      <!-- Top-left title & telemetry pill -->
-      <div class="hud-card hud-brand">
-        <div class="brand-row">
+    <!-- Live Aerial Loading & Welcome Screen Overlay -->
+    <div id="welcome-overlay" class="welcome-overlay">
+      <div class="welcome-card">
+        <div class="welcome-badge">
           <span class="brand-dot"></span>
-          <h1>NEON COVE</h1>
-          <span class="brand-badge">WEBGL2</span>
+          <span>WEBGL2 COASTAL &amp; UNDERWATER SANDBOX</span>
         </div>
-        <div class="telemetry-row">
-          <span id="hud-state" class="pill pill-accent">DRY SAND</span>
-          <span id="hud-depth" class="pill">ELEV +1.4m</span>
-          <span id="hud-prints" class="pill">PRINTS 0</span>
-        </div>
-      </div>
+        <h1 class="welcome-title">NEON COVE</h1>
+        <p class="welcome-subtitle">
+          A living sunlit bay, boardwalk resort, and coral reef teeming with 76 locals, real surf physics, and spatial coastal sound.
+        </p>
 
-      <!-- Top-right environment controls -->
-      <div class="hud-card hud-controls">
-        <div class="control-group">
-          <div class="control-label">
-            <span>Sun Angle</span>
-            <span id="sun-label" class="control-value">Midday</span>
+        <!-- Phase 1: Live Asset Loading Bar -->
+        <div id="loading-block" class="loading-block">
+          <div class="loading-meta">
+            <span id="loading-status">Streaming coastal world &amp; textures…</span>
+            <span id="loading-pct">0%</span>
           </div>
-          <input id="sun-slider" type="range" min="0" max="100" value="48" />
-          <div class="preset-row">
-            <button data-sun="12" class="chip">Dawn</button>
-            <button data-sun="48" class="chip active">Midday</button>
-            <button data-sun="76" class="chip">Golden</button>
-            <button data-sun="94" class="chip">Sunset</button>
+          <div class="loading-track">
+            <div id="loading-fill" class="loading-fill"></div>
           </div>
         </div>
 
-        <div class="control-group">
-          <div class="control-label">
-            <span>Wave Intensity</span>
-            <span id="wave-label" class="control-value">1.0×</span>
+        <!-- Phase 2: Concise, Helpful Welcome Highlights & Enter CTA -->
+        <div id="welcome-ready" class="welcome-ready hidden">
+          <div class="welcome-grid">
+            <div class="welcome-item">
+              <span class="w-ico">🏊</span>
+              <div><strong>Swim &amp; Dive Reefs</strong><span>Explore coral, turtles, jellyfish &amp; sunken treasure</span></div>
+            </div>
+            <div class="welcome-item">
+              <span class="w-ico">🛶</span>
+              <div><strong>Kayak, Slide &amp; Relax</strong><span>Press <kbd>E</kbd> at kayaks, slide, hammocks &amp; benches</span></div>
+            </div>
+            <div class="welcome-item">
+              <span class="w-ico">✦</span>
+              <div><strong>10 Golden Shells</strong><span>Discover hidden pearls &amp; blow bubble rings (<kbd>F</kbd>)</span></div>
+            </div>
+            <div class="welcome-item">
+              <span class="w-ico">🍹</span>
+              <div><strong>Resort Activities</strong><span>Order drinks (+speed), strum ukulele &amp; 3× telescope</span></div>
+            </div>
+            <div class="welcome-item">
+              <span class="w-ico">🌦</span>
+              <div><strong>Weather &amp; Day Cycle</strong><span>Switch Clear, Coastal Breeze, Mist, Golden Hour &amp; Sunset</span></div>
+            </div>
+            <div class="welcome-item">
+              <span class="w-ico">📷</span>
+              <div><strong>Photo Mode &amp; Controls</strong><span><kbd>WASD</kbd> move • <kbd>P</kbd> postcard • <kbd>L</kbd> mouse lock</span></div>
+            </div>
           </div>
-          <input id="wave-slider" type="range" min="25" max="200" value="100" />
-        </div>
 
-        <div class="action-row">
-          <button id="btn-camera" class="action-btn">3rd Person (V)</button>
-          <button id="btn-audio" class="action-btn">Audio: On (M)</button>
-        </div>
-        <button id="btn-aa" class="action-btn action-btn-full">AA: FXAA + SSAA</button>
-      </div>
-
-      <!-- Bottom-left controls legend -->
-      <div class="hud-card hud-legend">
-        <div class="legend-grid">
-          <div class="legend-item"><kbd>WASD</kbd><span>Move / Swim</span></div>
-          <div class="legend-item"><kbd>Shift</kbd><span>Run / Fast Swim</span></div>
-          <div class="legend-item"><kbd>Space</kbd><span>Jump / Ascend</span></div>
-          <div class="legend-item"><kbd>C / Ctrl</kbd><span>Dive Down</span></div>
-          <div class="legend-item"><kbd>Mouse</kbd><span>Look / Scroll Zoom</span></div>
-          <div class="legend-item"><kbd>V</kbd><span>1st / 3rd View</span></div>
-          <div class="legend-item"><kbd>H</kbd><span>Hide HUD</span></div>
-          <div class="legend-item"><kbd>M</kbd><span>Mute Audio</span></div>
+          <div class="welcome-actions">
+            <button id="btn-enter-cove" class="btn-primary">Explore Neon Cove</button>
+            <button id="btn-enter-sunset" class="btn-secondary">Enter at Sunset</button>
+            <button id="btn-welcome-lock" class="btn-ghost" title="Toggle pointer lock vs free drag orbit">Mouse Lock: On</button>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Subtle click-to-explore prompt -->
-    <div id="pointer-hint" class="pointer-hint">
-      Click anywhere to look around &amp; enable spatial audio • Drag or move mouse • <kbd>Esc</kbd> to release cursor
+    <!-- Main In-Game Minimal HUD (hidden during Welcome Screen, fades in smoothly on Explore!) -->
+    <div id="hud-root" class="hud-root hud-hidden">
+      <!-- Top-center tactical compass & nearest landmark/shell radar (Top-Left is 100% unobstructed!) -->
+      <div id="hud-compass" class="hud-card hud-compass">
+        <span id="compass-heading" class="compass-heading">S · 180°</span>
+        <span class="compass-sep">•</span>
+        <span id="compass-landmark" class="compass-detail">Ocean Pier</span>
+        <span class="compass-sep">•</span>
+        <span id="compass-shell" class="compass-shell">✦ 14m</span>
+        <span id="boost-pill" class="boost-pill hidden">⚡ Boost</span>
+      </div>
+
+      <!-- Top-right collapsible environment & travel controls -->
+      <div id="hud-controls" class="hud-card hud-controls">
+        <div class="controls-header">
+          <span class="controls-title">NEON COVE</span>
+          <button id="btn-collapse" class="collapse-btn" title="Collapse / Expand panel">▾</button>
+        </div>
+
+        <div id="controls-body" class="controls-body">
+          <div class="control-group">
+            <div class="control-label">
+              <span>Sun Angle</span>
+              <span id="sun-label" class="control-value">Midday</span>
+            </div>
+            <input id="sun-slider" type="range" min="0" max="100" value="48" />
+            <div class="preset-row">
+              <button data-sun="12" class="chip">Dawn</button>
+              <button data-sun="48" class="chip active">Midday</button>
+              <button data-sun="76" class="chip">Golden</button>
+              <button data-sun="94" class="chip">Sunset</button>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <div class="control-label">
+              <span>Wave Intensity</span>
+              <span id="wave-label" class="control-value">1.00×</span>
+            </div>
+            <input id="wave-slider" type="range" min="25" max="200" value="100" />
+          </div>
+
+          <div class="control-group">
+            <div class="control-label">
+              <span>Volume</span>
+              <span id="volume-label" class="control-value">35%</span>
+            </div>
+            <input id="volume-slider" type="range" min="0" max="100" value="35" />
+          </div>
+
+          <div class="control-group">
+            <div class="control-label">
+              <span>Weather</span>
+              <span id="weather-label" class="control-value">Clear</span>
+            </div>
+            <div class="preset-row">
+              <button data-weather="clear" class="chip weather-chip active">Clear</button>
+              <button data-weather="breeze" class="chip weather-chip">Breeze</button>
+              <button data-weather="mist" class="chip weather-chip">Mist</button>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <div class="control-label">
+              <span>Quick Travel</span>
+              <span class="control-value">8 Spots</span>
+            </div>
+            <div class="preset-row">
+              <button data-tp="bay" class="chip tp-chip">Bay</button>
+              <button data-tp="tiki" class="chip tp-chip">Tiki</button>
+              <button data-tp="coffee" class="chip tp-chip">Coffee</button>
+              <button data-tp="fort" class="chip tp-chip">Fort</button>
+            </div>
+            <div class="preset-row">
+              <button data-tp="slide" class="chip tp-chip">Slide</button>
+              <button data-tp="raft" class="chip tp-chip">Raft</button>
+              <button data-tp="east" class="chip tp-chip">East</button>
+              <button data-tp="reef" class="chip tp-chip">Reef</button>
+            </div>
+          </div>
+
+          <div class="action-row">
+            <button id="btn-camera" class="action-btn">3rd Person (V)</button>
+            <button id="btn-mouselock" class="action-btn active">Mouse Lock: On (L)</button>
+          </div>
+          <div class="action-row">
+            <button id="btn-audio" class="action-btn">Audio: On (M)</button>
+            <button id="btn-cycle" class="action-btn">Day Cycle (T)</button>
+          </div>
+          <div class="action-row">
+            <button id="btn-photo" class="action-btn">Photo (P)</button>
+            <button id="btn-aa" class="action-btn">AA: FXAA + SSAA</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom-left compact controls legend -->
+      <div class="hud-card hud-legend">
+        <div class="legend-grid">
+          <div class="legend-item"><kbd>WASD</kbd><span>Move / Kayak</span></div>
+          <div class="legend-item"><kbd>Shift</kbd><span>Run / Fast Swim</span></div>
+          <div class="legend-item"><kbd>Space</kbd><span>Jump / Ascend</span></div>
+          <div class="legend-item"><kbd>C / Ctrl</kbd><span>Dive Down</span></div>
+          <div class="legend-item"><kbd>E / F</kbd><span>Interact / Bubble Ring</span></div>
+          <div class="legend-item"><kbd>L</kbd><span>Mouse Lock Toggle</span></div>
+          <div class="legend-item"><kbd>V / P</kbd><span>Camera / Photo</span></div>
+          <div class="legend-item"><kbd>H / M</kbd><span>HUD / Mute</span></div>
+        </div>
+      </div>
+
+      <!-- Bottom-right Golden Seashell Counter + Clickable Field Guide Drawer -->
+      <div id="shell-guide" class="hud-card shell-guide hidden">
+        <div class="shell-guide-header">
+          <span>✦ Golden Shell Field Guide</span>
+          <button id="btn-guide-close" class="collapse-btn">✕</button>
+        </div>
+        <ul id="shell-guide-list" class="shell-guide-list"></ul>
+      </div>
+
+      <button id="hud-shells-card" class="hud-card hud-shells-card" title="Open Golden Shell Field Guide">
+        <span class="shell-star">✦</span>
+        <span id="hud-shells" class="shell-count">0/10</span>
+        <span class="shell-label">Golden Shells</span>
+      </button>
+
+      <!-- Contextual interaction pill -->
+      <div id="action-prompt" class="action-prompt hidden">Press <kbd>E</kbd> to Interact</div>
+    </div>
+
+    <!-- Brass Telescope 3x Telephoto Vignette Overlay -->
+    <div id="telescope-overlay" class="telescope-overlay hidden">
+      <div class="telescope-ring"></div>
+      <div class="telescope-badge">3× COASTAL TELESCOPE • PRESS E TO EXIT</div>
+    </div>
+
+    <!-- Golden Shell / Drink / Treasure Discovery Toast -->
+    <div id="discovery-toast" class="discovery-toast hidden">✦ Golden Shell Discovered!</div>
+
+    <!-- Subtle click-to-explore prompt (shown only when Mouse Lock is ON & cursor unlocked) -->
+    <div id="pointer-hint" class="pointer-hint dismissed">
+      Click to lock mouse look • <kbd>L</kbd> to toggle free drag orbit • <kbd>Esc</kbd> to release cursor
+    </div>
+
+    <!-- Photo Mode minimal bar -->
+    <div id="photo-bar" class="photo-bar hidden">
+      <button id="btn-snap" class="action-btn">📷 Save Postcard PNG</button>
+      <button id="btn-photo-exit" class="action-btn">Exit Photo Mode (P)</button>
     </div>
 
     <!-- Minimal HUD hidden indicator -->

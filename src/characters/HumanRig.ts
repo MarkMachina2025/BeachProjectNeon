@@ -1,18 +1,34 @@
 import * as THREE from 'three';
-import CustomShaderMaterial from 'three-custom-shader-material/vanilla';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CAUSTICS_GLSL } from '../shaders/causticsChunk';
 
 export type HumanAnimState =
   | 'idle'
   | 'walk'
   | 'run'
+  | 'jump'
+  | 'fall'
+  | 'slide'
+  | 'yoga'
+  | 'rinse'
+  | 'build_sand'
   | 'wade'
   | 'tread'
   | 'swim_surface'
   | 'swim_underwater'
   | 'sunbathe'
   | 'lounge'
-  | 'chat';
+  | 'chat'
+  | 'play_ball'
+  | 'sit_bar'
+  | 'sit_chair'
+  | 'dance'
+  | 'wave'
+  | 'scan_horizon'
+  | 'whistle_signal'
+  | 'snorkel_kick'
+  | 'float_tube'
+  | 'sup_paddle';
 
 export type HairStyle = 'short_crop' | 'surfer_waves' | 'ponytail' | 'long_wavy' | 'top_bun' | 'curly_crown';
 export type OutfitStyle = 'boardshorts' | 'rashguard' | 'bikini' | 'onepiece' | 'linen_shirt';
@@ -27,6 +43,15 @@ export interface HumanAppearance {
   primaryColor: number;
   secondaryColor: number;
   sunglasses?: boolean;
+  sunHat?: boolean;
+  baseballCap?: boolean;
+  sandals?: boolean;
+  watch?: boolean;
+  necklace?: boolean;
+  isLifeguard?: boolean;
+  snorkelGear?: boolean;
+  /** Enable underwater caustics + wetness shader only for characters that touch water */
+  useWaterCaustics?: boolean;
 }
 
 interface LoftRing {
@@ -38,11 +63,60 @@ interface LoftRing {
 }
 
 /**
- * Builds a smooth organically sculpted lofted mesh from elliptical cross-section rings.
- * Produces natural anatomical curvature (clavicles, waist taper, calves, forearms, cranium)
- * instead of primitive blocks or cylinders.
+ * Generates a subtle tileable micro-grain normal map (fine skin pores + woven linen texture)
+ * so human skin and summer clothing catch directional sunlight organically instead of flat plastic.
  */
-function createAnatomicalLoft(rings: LoftRing[], radialSegs = 20, closeEnds = true): THREE.BufferGeometry {
+function createHumanDetailNormalMap(): THREE.DataTexture {
+  const size = 128;
+  const data = new Uint8Array(size * size * 4);
+  const h = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      // Cross-woven micro-linen + organic stipple
+      const weave = Math.sin(x * 0.98) * Math.cos(y * 0.98) * 0.35;
+      const hash = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+      const grain = (hash - Math.floor(hash) - 0.5) * 0.45;
+      h[y * size + x] = weave + grain;
+    }
+  }
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const hL = h[y * size + ((x - 1 + size) % size)];
+      const hR = h[y * size + ((x + 1) % size)];
+      const hD = h[((y - 1 + size) % size) * size + x];
+      const hU = h[((y + 1) % size) * size + x];
+      const dx = (hL - hR) * 0.42;
+      const dy = (hD - hU) * 0.42;
+      const dz = 1.0;
+      const inv = 1.0 / Math.hypot(dx, dy, dz);
+      const off = (y * size + x) * 4;
+      data[off] = Math.round((dx * inv * 0.5 + 0.5) * 255);
+      data[off + 1] = Math.round((dy * inv * 0.5 + 0.5) * 255);
+      data[off + 2] = Math.round((dz * inv * 0.5 + 0.5) * 255);
+      data[off + 3] = 255;
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(6, 6);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+const HUMAN_DETAIL_NORMAL = createHumanDetailNormalMap();
+
+/**
+ * Builds a smooth organically sculpted lofted mesh from elliptical cross-section rings.
+ * Optional anatomical sculpting adds subtle chest sternum/pectoral definition, back spine curve,
+ * or hip/glute contours instead of flat uniform cylinders.
+ */
+function createAnatomicalLoft(
+  rings: LoftRing[],
+  radialSegs = 12,
+  closeEnds = true,
+  sculpt?: 'chest' | 'pelvis' | 'head'
+): THREE.BufferGeometry {
   const positions: number[] = [];
   const uvs: number[] = [];
   const indices: number[] = [];
@@ -58,10 +132,53 @@ function createAnatomicalLoft(rings: LoftRing[], radialSegs = 20, closeEnds = tr
     for (let s = 0; s <= radialSegs; s++) {
       const u = s / radialSegs;
       const a = u * Math.PI * 2;
-      const x = ox + Math.cos(a) * ring.rx;
-      const z = oz + Math.sin(a) * ring.rz;
+      const ca = Math.cos(a);
+      const sa = Math.sin(a);
+      let rx = ring.rx;
+      let rz = ring.rz;
+
+      if (sculpt === 'chest' && v > 0.15 && v < 0.85) {
+        const midBand = Math.sin(((v - 0.15) / 0.70) * Math.PI);
+        // Subtle twin pectoral/ribcage fullness in front (sa > 0) + slight sternum & spine valley
+        if (sa > 0.15) {
+          const pecLobe = Math.sin(Math.min(1, Math.abs(ca) * 1.65) * Math.PI) * sa;
+          const sternumDip = Math.exp(-ca * ca * 14.0) * sa;
+          rz += (pecLobe * 0.011 - sternumDip * 0.008) * midBand;
+        } else if (sa < -0.2) {
+          // Gentle central spine furrow along back
+          const spineDip = Math.exp(-ca * ca * 16.0) * (-sa);
+          rz -= spineDip * 0.009 * midBand;
+        }
+      } else if (sculpt === 'pelvis' && v > 0.1 && v < 0.78) {
+        const band = Math.sin(((v - 0.1) / 0.68) * Math.PI);
+        if (sa < -0.15) {
+          // Natural rear glute curvature
+          const glute = Math.sin(Math.min(1, Math.abs(ca) * 1.55) * Math.PI) * (-sa);
+          rz += glute * 0.014 * band;
+        }
+      } else if (sculpt === 'head' && v > 0.08 && v < 0.80) {
+        // Sculpted human facial planes: tapered jaw/chin, subtle cheek fullness, soft recessed eye sockets & brow ridge
+        if (sa > 0.25) {
+          if (v < 0.34) {
+            // Tapered jawline toward chin
+            const jawT = 1.0 - v / 0.34;
+            rx *= 1.0 - 0.14 * sa * jawT;
+          } else if (v >= 0.34 && v < 0.56) {
+            // Soft zygomatic cheekbone contour
+            const cheekLobe = Math.sin(Math.min(1, Math.abs(ca) * 1.8) * Math.PI) * sa;
+            rz += cheekLobe * 0.006;
+          } else if (v >= 0.52 && v < 0.70) {
+            // Gentle recessed orbital socket so eyes sit naturally inside the skull
+            const socket = Math.sin(Math.min(1, Math.abs(ca) * 2.1) * Math.PI) * sa;
+            rz -= socket * 0.0055;
+          }
+        }
+      }
+
+      const x = ox + ca * rx;
+      const z = oz + sa * rz;
       positions.push(x, ring.y, z);
-      uvs.push(u, v);
+      uvs.push(u * 2.0, v * 2.0);
     }
   }
 
@@ -109,36 +226,87 @@ export interface FootPlantEvent {
   worldPos: THREE.Vector3;
 }
 
+interface HumanWaterUniforms {
+  uTime: { value: number };
+  uWaterHeight: { value: number };
+  uWetHeight: { value: number };
+  uSunDirection: { value: THREE.Vector3 };
+  uSunColor: { value: THREE.Color };
+}
+
+const SHARED_LAND_HUMAN_MAT = new THREE.MeshStandardMaterial({
+  vertexColors: true,
+  normalMap: HUMAN_DETAIL_NORMAL,
+  normalScale: new THREE.Vector2(0.18, 0.18),
+  roughness: 0.62,
+  metalness: 0.02
+});
+SHARED_LAND_HUMAN_MAT.onBeforeCompile = (shader) => {
+  shader.vertexShader =
+    'attribute vec2 aMatProps;\nvarying vec2 vMatProps;\n' +
+    shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+       vMatProps = aMatProps;`
+    );
+  shader.fragmentShader =
+    'varying vec2 vMatProps;\n' +
+    shader.fragmentShader
+      .replace(
+        '#include <roughnessmap_fragment>',
+        `#include <roughnessmap_fragment>
+         roughnessFactor = clamp(vMatProps.x, 0.08, 0.96);`
+      )
+      .replace(
+        '#include <lights_fragment_end>',
+        `#include <lights_fragment_end>
+         float matType = vMatProps.y;
+         float viewRim = pow(1.0 - max(dot(normalize(vNormal), normalize(vViewPosition)), 0.0), 2.6);
+         if (matType < 0.5) {
+           // Human skin: warm sunlit subsurface scattering wrap + soft backlit rim glow
+           reflectedLight.indirectDiffuse += diffuseColor.rgb * vec3(0.105, 0.056, 0.034);
+           reflectedLight.directDiffuse += diffuseColor.rgb * vec3(0.14, 0.06, 0.03) * viewRim;
+         } else if (matType < 1.5) {
+           // Summer cotton/linen/swimwear fabric: soft velvety grazing cloth sheen (zero plastic gloss!)
+           reflectedLight.indirectDiffuse += vec3(0.12, 0.115, 0.11) * viewRim * (0.4 + 0.6 * diffuseColor.rgb);
+         } else if (matType < 2.5) {
+           // Hair: soft sunlit crown specular ribbon
+           reflectedLight.directSpecular += vec3(0.08, 0.075, 0.068) * (0.35 + 0.65 * viewRim);
+         }`
+      );
+};
+SHARED_LAND_HUMAN_MAT.customProgramCacheKey = () => 'skinned-human-pbr-sss-v3';
+
 /**
- * Anatomically proportioned articulated human character with hierarchical bone rig,
- * smooth organic lofted limb/torso geometry, summer swimwear & hairstyles,
- * underwater caustics + wet-skin shader, and damped skeletal animation blending.
+ * Anatomically proportioned articulated human character with single-draw SkinnedMesh rig,
+ * hierarchical THREE.Bone skeleton, smooth organic lofted limb/torso geometry, summer swimwear &
+ * hairstyles, underwater caustics + wet-skin shader, and damped skeletal animation blending.
  */
 export class HumanCharacter {
   public readonly root = new THREE.Group();
   public readonly appearance: HumanAppearance;
 
   // Hierarchical bone/joint pivots
-  public readonly hips = new THREE.Group();
-  public readonly spine = new THREE.Group();
-  public readonly chest = new THREE.Group();
-  public readonly neck = new THREE.Group();
-  public readonly head = new THREE.Group();
+  public readonly hips = new THREE.Bone();
+  public readonly spine = new THREE.Bone();
+  public readonly chest = new THREE.Bone();
+  public readonly neck = new THREE.Bone();
+  public readonly head = new THREE.Bone();
 
-  public readonly upperArmL = new THREE.Group();
-  public readonly forearmL = new THREE.Group();
-  public readonly upperArmR = new THREE.Group();
-  public readonly forearmR = new THREE.Group();
+  public readonly upperArmL = new THREE.Bone();
+  public readonly forearmL = new THREE.Bone();
+  public readonly upperArmR = new THREE.Bone();
+  public readonly forearmR = new THREE.Bone();
 
-  public readonly thighL = new THREE.Group();
-  public readonly shinL = new THREE.Group();
-  public readonly footL = new THREE.Group();
+  public readonly thighL = new THREE.Bone();
+  public readonly shinL = new THREE.Bone();
+  public readonly footL = new THREE.Bone();
 
-  public readonly thighR = new THREE.Group();
-  public readonly shinR = new THREE.Group();
-  public readonly footR = new THREE.Group();
+  public readonly thighR = new THREE.Bone();
+  public readonly shinR = new THREE.Bone();
+  public readonly footR = new THREE.Bone();
 
-  private readonly causticMaterials: CustomShaderMaterial[] = [];
+  private waterUniforms: HumanWaterUniforms | null = null;
   private animPhase = Math.random() * Math.PI * 2;
   private lastStepHalf = -1;
   private lastStrokeHalf = -1;
@@ -149,20 +317,22 @@ export class HumanCharacter {
   constructor(appearance: HumanAppearance) {
     this.appearance = appearance;
     const scale = appearance.height / 1.75;
-    this.root.scale.setScalar(scale);
 
     const isFemale = appearance.gender === 'female';
 
-    const skinMat = this.createHumanMaterial(appearance.skinHex, 0.56, 0.0);
-    const primaryMat = this.createHumanMaterial(appearance.primaryColor, 0.72, 0.02);
-    const secondaryMat = this.createHumanMaterial(appearance.secondaryColor, 0.68, 0.02);
-    const hairMat = this.createHumanMaterial(appearance.hairHex, 0.78, 0.04);
-    const eyeWhiteMat = new THREE.MeshStandardMaterial({ color: 0xf6f6f6, roughness: 0.25 });
-    const pupilMat = new THREE.MeshStandardMaterial({ color: 0x1d1a18, roughness: 0.15 });
-    const lipMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(appearance.skinHex).lerp(new THREE.Color(0xb85c5c), 0.32),
-      roughness: 0.45
-    });
+    const skinMat = this.createHumanMaterial(appearance.skinHex, 0.48, 0.0, 0);
+    const primaryMat = this.createHumanMaterial(appearance.primaryColor, 0.84, 0.01, 1);
+    const secondaryMat = this.createHumanMaterial(appearance.secondaryColor, 0.86, 0.01, 1);
+    const hairMat = this.createHumanMaterial(appearance.hairHex, 0.56, 0.03, 2);
+    const eyeWhiteMat = this.createHumanMaterial(0xf8f8f8, 0.14, 0.02, 3);
+    const pupilMat = this.createHumanMaterial(0x181513, 0.08, 0.05, 3);
+    const catchlightMat = this.createHumanMaterial(0xffffff, 0.05, 0.1, 3);
+    const lipMat = this.createHumanMaterial(
+      new THREE.Color(appearance.skinHex).lerp(new THREE.Color(0xb85c5c), 0.34).getHex(),
+      0.38,
+      0.0,
+      0
+    );
 
     // ==================== HIPS / PELVIS ====================
     this.hips.position.set(0, 0.95, 0);
@@ -183,28 +353,37 @@ export class HumanCharacter {
         : skinMat;
 
     const pelvisGeo = createAnatomicalLoft([
-      { y: -0.09, rx: hipW * 0.82, rz: 0.105, zOffset: -0.01 },
-      { y: -0.02, rx: hipW, rz: 0.118, zOffset: -0.008 },
-      { y: 0.07, rx: hipW * 0.94, rz: 0.112, zOffset: -0.004 },
-      { y: 0.14, rx: waistW * 1.04, rz: 0.098, zOffset: 0.0 }
-    ]);
+      { y: -0.098, rx: hipW * 0.86, rz: 0.106, zOffset: -0.01 },
+      { y: -0.01, rx: hipW, rz: 0.118, zOffset: -0.008 },
+      { y: 0.06, rx: hipW * 0.94, rz: 0.110, zOffset: -0.004 },
+      { y: 0.115, rx: waistW * 1.03, rz: 0.097, zOffset: 0.0 }
+    ], 12, true, 'pelvis');
     const pelvisMesh = new THREE.Mesh(pelvisGeo, pelvisMat);
     pelvisMesh.castShadow = true;
     pelvisMesh.receiveShadow = true;
     this.hips.add(pelvisMesh);
 
-    // Waistband / swim tie detail
+    // Waistband + boardshort front drawstring tie (offset outward cleanly, zero z-fighting!)
     if (appearance.outfitStyle === 'boardshorts' || appearance.outfitStyle === 'linen_shirt') {
-      const bandGeo = new THREE.TorusGeometry(waistW * 0.94, 0.014, 7, 18);
+      const bandGeo = new THREE.TorusGeometry(waistW * 1.02, 0.012, 7, 18);
       bandGeo.rotateX(Math.PI / 2);
-      bandGeo.scale(1.0, 1.0, 0.78);
+      bandGeo.scale(1.0, 1.0, 0.72);
       const band = new THREE.Mesh(bandGeo, secondaryMat);
-      band.position.y = 0.12;
+      band.position.y = 0.112;
       this.hips.add(band);
+
+      if (appearance.outfitStyle === 'boardshorts') {
+        for (const side of [-1, 1]) {
+          const cord = new THREE.Mesh(new THREE.BoxGeometry(0.009, 0.068, 0.009), secondaryMat);
+          cord.position.set(side * 0.014, 0.075, 0.108);
+          cord.rotation.z = side * 0.18;
+          this.hips.add(cord);
+        }
+      }
     }
 
-    // ==================== SPINE & TORSO ====================
-    this.spine.position.set(0, 0.13, 0);
+    // ==================== SPINE & TORSO (ZERO OVERLAP / ZERO Z-FIGHTING!) ====================
+    this.spine.position.set(0, 0.12, 0);
     this.hips.add(this.spine);
 
     const midTorsoMat =
@@ -214,10 +393,14 @@ export class HumanCharacter {
           ? secondaryMat
           : skinMat;
 
+    // Bottom ring inset cleanly inside pelvis (0.91x) and top ring inset cleanly inside chest (0.91x)
+    // so bending/twisting during walking NEVER produces coplanar skin Z-fighting!
     const abdomenGeo = createAnatomicalLoft([
-      { y: -0.01, rx: waistW * 1.02, rz: 0.096 },
-      { y: 0.09, rx: waistW * 0.98, rz: 0.098, zOffset: 0.005 },
-      { y: 0.19, rx: chestW * 0.88, rz: chestD * 0.92, zOffset: 0.008 }
+      { y: -0.015, rx: waistW * 0.91, rz: 0.088 },
+      { y: 0.015, rx: waistW * 0.98, rz: 0.096, zOffset: 0.003 },
+      { y: 0.095, rx: waistW * 0.99, rz: 0.099, zOffset: 0.005 },
+      { y: 0.165, rx: chestW * 0.87, rz: chestD * 0.91, zOffset: 0.007 },
+      { y: 0.195, rx: chestW * 0.80, rz: chestD * 0.84, zOffset: 0.006 }
     ]);
     const abdomenMesh = new THREE.Mesh(abdomenGeo, midTorsoMat);
     abdomenMesh.castShadow = true;
@@ -225,7 +408,7 @@ export class HumanCharacter {
     this.spine.add(abdomenMesh);
 
     // ==================== CHEST & SHOULDERS ====================
-    this.chest.position.set(0, 0.18, 0);
+    this.chest.position.set(0, 0.175, 0);
     this.spine.add(this.chest);
 
     const upperTorsoMat =
@@ -236,30 +419,29 @@ export class HumanCharacter {
           : skinMat;
 
     const chestGeo = createAnatomicalLoft([
-      { y: -0.02, rx: chestW * 0.88, rz: chestD * 0.92, zOffset: 0.006 },
-      { y: 0.09, rx: chestW * 1.02, rz: chestD, zOffset: 0.012 },
-      { y: 0.19, rx: chestW * 0.98, rz: chestD * 0.86, zOffset: 0.004 },
-      { y: 0.25, rx: 0.115, rz: 0.075, zOffset: -0.004 }
-    ]);
+      { y: -0.012, rx: chestW * 0.89, rz: chestD * 0.93, zOffset: 0.006 },
+      { y: 0.085, rx: chestW * 1.03, rz: chestD * 1.01, zOffset: 0.012 },
+      { y: 0.19, rx: chestW * 0.99, rz: chestD * 0.87, zOffset: 0.004 },
+      { y: 0.25, rx: 0.112, rz: 0.074, zOffset: -0.004 }
+    ], 12, true, 'chest');
     const chestMesh = new THREE.Mesh(chestGeo, upperTorsoMat);
     chestMesh.castShadow = true;
     chestMesh.receiveShadow = true;
     this.chest.add(chestMesh);
 
-    // Swimwear bikini top or shirt collar accents
+    // Swimwear bikini top, linen shirt placket + buttons + pocket, or rashguard athletic trim
     if (appearance.outfitStyle === 'bikini') {
       const topGeo = createAnatomicalLoft([
-        { y: 0.03, rx: chestW * 0.99, rz: chestD * 1.02, zOffset: 0.014 },
-        { y: 0.125, rx: chestW * 1.03, rz: chestD * 1.06, zOffset: 0.018 },
-        { y: 0.175, rx: chestW * 0.96, rz: chestD * 0.95, zOffset: 0.01 }
-      ]);
+        { y: 0.032, rx: chestW * 1.05, rz: chestD * 1.07, zOffset: 0.014 },
+        { y: 0.125, rx: chestW * 1.08, rz: chestD * 1.11, zOffset: 0.018 },
+        { y: 0.172, rx: chestW * 1.02, rz: chestD * 1.01, zOffset: 0.01 }
+      ], 10);
       const topMesh = new THREE.Mesh(topGeo, secondaryMat);
       topMesh.castShadow = true;
       this.chest.add(topMesh);
 
-      // Halter straps
       for (const side of [-1, 1]) {
-        const strap = new THREE.Mesh(new THREE.CylinderGeometry(0.011, 0.011, 0.16, 6), secondaryMat);
+        const strap = new THREE.Mesh(new THREE.CylinderGeometry(0.010, 0.010, 0.16, 5), secondaryMat);
         strap.position.set(side * 0.075, 0.21, 0.045);
         strap.rotation.z = side * 0.32;
         strap.rotation.x = -0.35;
@@ -272,90 +454,179 @@ export class HumanCharacter {
         this.chest.add(strap);
       }
     } else if (appearance.outfitStyle === 'linen_shirt') {
-      // Relaxed open beach collar V-neck
-      const collar = new THREE.Mesh(new THREE.TorusGeometry(0.085, 0.018, 6, 14, Math.PI * 1.3), secondaryMat);
+      // Tailored open resort collar + front button placket + pearl buttons + chest pocket
+      const collar = new THREE.Mesh(new THREE.TorusGeometry(0.086, 0.018, 5, 12, Math.PI * 1.3), secondaryMat);
       collar.rotation.x = Math.PI / 2 + 0.22;
       collar.rotation.z = -Math.PI * 0.65;
       collar.position.set(0, 0.23, 0.015);
       this.chest.add(collar);
+
+      const placket = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.22, 0.012), secondaryMat);
+      placket.position.set(0, 0.075, chestD * 1.03 + 0.008);
+      this.chest.add(placket);
+
+      const btnMat = this.createHumanMaterial(0xf7f1e3, 0.25, 0.1, 3);
+      for (const by of [0.01, 0.075, 0.14]) {
+        const btn = new THREE.Mesh(new THREE.BoxGeometry(0.010, 0.010, 0.008), btnMat);
+        btn.position.set(0, by, chestD * 1.05 + 0.012);
+        this.chest.add(btn);
+      }
+
+      const pocket = new THREE.Mesh(new THREE.BoxGeometry(0.068, 0.074, 0.010), primaryMat);
+      pocket.position.set(0.078, 0.11, chestD * 0.99 + 0.008);
+      pocket.rotation.y = 0.24;
+      this.chest.add(pocket);
+    } else if (appearance.outfitStyle === 'rashguard' && !appearance.isLifeguard) {
+      // Flush contoured athletic chest stripe hugging the torso loft seamlessly (ZERO sticking-out box!)
+      const stripeGeo = createAnatomicalLoft([
+        { y: 0.086, rx: chestW * 1.045, rz: chestD * 1.028, zOffset: 0.012 },
+        { y: 0.122, rx: chestW * 1.042, rz: chestD * 1.010, zOffset: 0.011 }
+      ], 12, false, 'chest');
+      const stripe = new THREE.Mesh(stripeGeo, secondaryMat);
+      this.chest.add(stripe);
     }
 
-    // ==================== NECK & SCULPTED HEAD ====================
+    // ==================== NECK & SCULPTED EXPRESSIVE FACE ====================
     this.neck.position.set(0, 0.24, 0.0);
     this.chest.add(this.neck);
 
     const neckGeo = createAnatomicalLoft([
-      { y: -0.01, rx: 0.056, rz: 0.058 },
-      { y: 0.05, rx: 0.050, rz: 0.052 },
-      { y: 0.105, rx: 0.052, rz: 0.054 }
-    ], 12);
+      { y: -0.015, rx: 0.052, rz: 0.054 },
+      { y: 0.048, rx: 0.044, rz: 0.047 },
+      { y: 0.108, rx: 0.046, rz: 0.049 }
+    ], 10);
     const neckMesh = new THREE.Mesh(neckGeo, skinMat);
     neckMesh.castShadow = true;
     this.neck.add(neckMesh);
 
-    this.head.position.set(0, 0.10, 0.012);
+    this.head.position.set(0, 0.096, 0.010);
     this.neck.add(this.head);
 
-    // Sculpted human cranium + jawline (clean proportions so outer hair volume never clips!)
+    // Sculpted human cranium, tapered jawline, cheekbones & subtle orbital recesses
     const headGeo = createAnatomicalLoft([
-      { y: 0.00, rx: 0.050, rz: 0.062, zOffset: 0.016 }, // Chin
-      { y: 0.04, rx: 0.072, rz: 0.084, zOffset: 0.009 }, // Jaw
-      { y: 0.10, rx: 0.085, rz: 0.098, zOffset: 0.002 }, // Cheekbones
-      { y: 0.165, rx: 0.086, rz: 0.100, zOffset: -0.004 }, // Forehead / temples
-      { y: 0.212, rx: 0.068, rz: 0.082, zOffset: -0.008 }, // Crown
-      { y: 0.232, rx: 0.022, rz: 0.028, zOffset: -0.008 }
-    ], 22);
+      { y: 0.002, rx: 0.040, rz: 0.054, zOffset: 0.020 }, // Soft tapered chin
+      { y: 0.042, rx: 0.068, rz: 0.082, zOffset: 0.012 }, // Jawline
+      { y: 0.098, rx: 0.084, rz: 0.096, zOffset: 0.003 }, // Cheekbones
+      { y: 0.158, rx: 0.086, rz: 0.099, zOffset: -0.003 }, // Brow / temples
+      { y: 0.208, rx: 0.070, rz: 0.084, zOffset: -0.008 }, // Crown
+      { y: 0.232, rx: 0.024, rz: 0.030, zOffset: -0.008 }
+    ], 11, true, 'head');
     const headMesh = new THREE.Mesh(headGeo, skinMat);
     headMesh.castShadow = true;
     headMesh.receiveShadow = true;
     this.head.add(headMesh);
 
-    // Ears
-    const earGeo = new THREE.SphereGeometry(0.020, 10, 8);
+    // Soft sculpted ears
+    const earGeo = new THREE.SphereGeometry(0.019, 5, 4);
     for (const side of [-1, 1]) {
       const ear = new THREE.Mesh(earGeo, skinMat);
-      ear.position.set(side * 0.084, 0.108, -0.006);
-      ear.scale.set(0.45, 1.12, 0.72);
+      ear.position.set(side * 0.083, 0.106, -0.008);
+      ear.scale.set(0.42, 1.15, 0.72);
       this.head.add(ear);
     }
 
-    // Subtle sculpted nose & lips
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.015, 0.038, 8), skinMat);
-    nose.position.set(0, 0.100, 0.102);
-    nose.rotation.x = Math.PI * 0.36;
-    this.head.add(nose);
+    // Natural sculpted nose bridge + rounded tip (replaces pointy cone!)
+    const noseBridge = new THREE.Mesh(new THREE.CapsuleGeometry(0.0075, 0.028, 1, 4), skinMat);
+    noseBridge.position.set(0, 0.106, 0.094);
+    noseBridge.rotation.x = -0.22;
+    this.head.add(noseBridge);
+    const noseTip = new THREE.Mesh(new THREE.SphereGeometry(0.0105, 5, 4), skinMat);
+    noseTip.position.set(0, 0.091, 0.102);
+    noseTip.scale.set(1.18, 0.78, 0.92);
+    this.head.add(noseTip);
 
-    const lips = new THREE.Mesh(new THREE.CapsuleGeometry(0.0065, 0.024, 5, 8), lipMat);
-    lips.rotation.z = Math.PI / 2;
-    lips.position.set(0, 0.057, 0.088);
-    this.head.add(lips);
+    // Sculpted natural smiling upper & lower lips
+    const upperLip = new THREE.Mesh(new THREE.CapsuleGeometry(0.0048, 0.024, 1, 4), lipMat);
+    upperLip.rotation.z = Math.PI / 2;
+    upperLip.position.set(0, 0.062, 0.0905);
+    this.head.add(upperLip);
+    const lowerLip = new THREE.Mesh(new THREE.CapsuleGeometry(0.0056, 0.020, 1, 4), lipMat);
+    lowerLip.rotation.z = Math.PI / 2;
+    lowerLip.position.set(0, 0.055, 0.0895);
+    this.head.add(lowerLip);
 
-    // Eyes & eyebrows
-    const eyeGeo = new THREE.SphereGeometry(0.012, 10, 8);
-    const pupilGeo = new THREE.SphereGeometry(0.007, 8, 8);
-    const browGeo = new THREE.BoxGeometry(0.026, 0.006, 0.007);
+    // Expressive realistic eyes: sclera, upper eyelid fold, colored iris, pupil, glossy catchlight, curved lashes & brow arches
+    const irisPalette = [0x3b6e8c, 0x5c4328, 0x3b7252, 0x735235, 0x4b627a];
+    const irisHex = irisPalette[Math.abs(Math.round(appearance.skinHex + appearance.hairHex)) % irisPalette.length];
+    const irisMat = this.createHumanMaterial(irisHex, 0.10, 0.05, 3);
+    const eyelidMat = this.createHumanMaterial(
+      new THREE.Color(appearance.skinHex).multiplyScalar(0.92).getHex(),
+      0.50,
+      0.0,
+      0
+    );
+    const eyeGeo = new THREE.SphereGeometry(0.0145, 5, 4);
+    const irisGeo = new THREE.SphereGeometry(0.0096, 5, 4);
+    const pupilGeo = new THREE.BoxGeometry(0.0072, 0.0072, 0.004);
+    const glintGeo = new THREE.BoxGeometry(0.0028, 0.0028, 0.0026);
+    const lidGeo = new THREE.BoxGeometry(0.026, 0.0065, 0.008);
+    const lashGeo = new THREE.BoxGeometry(0.025, 0.0032, 0.005);
+    const browGeo = new THREE.BoxGeometry(0.029, 0.0055, 0.006);
     for (const side of [-1, 1]) {
+      const eyeX = side * 0.0315;
+      const eyeY = 0.123;
+      const eyeZ = 0.0845;
+
       const eye = new THREE.Mesh(eyeGeo, eyeWhiteMat);
-      eye.position.set(side * 0.032, 0.126, 0.089);
-      eye.scale.set(1.0, 0.78, 0.65);
+      eye.position.set(eyeX, eyeY, eyeZ);
+      eye.scale.set(1.06, 0.72, 0.62);
       this.head.add(eye);
 
+      const iris = new THREE.Mesh(irisGeo, irisMat);
+      iris.position.set(eyeX, eyeY, eyeZ + 0.0068);
+      iris.scale.set(1.0, 0.96, 0.48);
+      this.head.add(iris);
+
       const pupil = new THREE.Mesh(pupilGeo, pupilMat);
-      pupil.position.set(side * 0.032, 0.126, 0.095);
+      pupil.position.set(eyeX, eyeY, eyeZ + 0.0096);
       this.head.add(pupil);
 
+      const glint = new THREE.Mesh(glintGeo, catchlightMat);
+      glint.position.set(eyeX + 0.0036, eyeY + 0.0032, eyeZ + 0.0114);
+      this.head.add(glint);
+
+      // Soft upper eyelid crease hugging top of eye
+      const lid = new THREE.Mesh(lidGeo, eyelidMat);
+      lid.rotation.z = -side * 0.12;
+      lid.position.set(eyeX, eyeY + 0.0095, eyeZ + 0.0065);
+      this.head.add(lid);
+
+      const lash = new THREE.Mesh(lashGeo, pupilMat);
+      lash.rotation.z = -side * 0.10;
+      lash.position.set(eyeX, eyeY + 0.0072, eyeZ + 0.0092);
+      this.head.add(lash);
+
       const brow = new THREE.Mesh(browGeo, hairMat);
-      brow.position.set(side * 0.032, 0.143, 0.092);
-      brow.rotation.z = -side * 0.08;
+      brow.rotation.z = -side * 0.14;
+      brow.position.set(eyeX, eyeY + 0.021, eyeZ + 0.0075);
       this.head.add(brow);
     }
 
     // Styled sculpted hair
     this.buildHair(appearance.hairStyle, hairMat);
 
-    // Optional stylish summer sunglasses
-    if (appearance.sunglasses) {
+    // Optional stylish summer sunglasses, hats, lifeguard kit, snorkel gear, jewelry & watch
+    if (appearance.sunglasses && !appearance.snorkelGear) {
       this.buildSunglasses();
+    }
+    if (appearance.sunHat) {
+      this.buildSunHat(appearance.primaryColor);
+    } else if (appearance.baseballCap || appearance.isLifeguard) {
+      this.buildBaseballCap(appearance.isLifeguard ? 0xe63946 : appearance.primaryColor);
+    }
+    if (appearance.snorkelGear) {
+      this.buildSnorkelMask(appearance.secondaryColor);
+    }
+    if (appearance.isLifeguard) {
+      this.buildLifeguardKit();
+    } else if (appearance.necklace) {
+      const neckBead = new THREE.Mesh(
+        new THREE.TorusGeometry(0.066, 0.006, 5, 14),
+        new THREE.MeshStandardMaterial({ color: 0xf6eed8, roughness: 0.45 })
+      );
+      neckBead.rotation.x = Math.PI / 2 + 0.35;
+      neckBead.position.set(0, 0.225, 0.025);
+      this.chest.add(neckBead);
     }
 
     // ==================== ARMS ====================
@@ -382,58 +653,253 @@ export class HumanCharacter {
 
     this.buildLeg(this.thighL, this.shinL, this.footL, -1, hipLegX, skinMat, primaryMat, shortsLength, isFemale);
     this.buildLeg(this.thighR, this.shinR, this.footR, 1, hipLegX, skinMat, primaryMat, shortsLength, isFemale);
+
+    // Bake entire articulated rig into 1 SkinnedMesh draw call at identity root scale, then apply scale
+    this.bakeSkinnedCharacter();
+    this.root.scale.setScalar(scale);
   }
 
-  private createHumanMaterial(colorHex: number, roughness: number, metalness: number): CustomShaderMaterial {
-    const mat = new CustomShaderMaterial({
-      baseMaterial: THREE.MeshStandardMaterial,
+  private createHumanMaterial(colorHex: number, roughness: number, metalness: number, matType = 1): THREE.Material {
+    const mat = new THREE.MeshStandardMaterial({
       color: colorHex,
       roughness,
-      metalness,
-      uniforms: {
-        uTime: { value: 0 },
-        uWaterHeight: { value: 0 },
-        uWetHeight: { value: -2.0 },
-        uSunDirection: { value: new THREE.Vector3(0.35, 0.72, 0.58).normalize() },
-        uSunColor: { value: new THREE.Color(0xfff4dd) }
-      },
-      vertexShader: /* glsl */ `
-        varying vec3 vWorldPos;
-        varying vec3 vWorldNormal;
-        void main() {
-          vec4 wp = modelMatrix * vec4(position, 1.0);
-          vWorldPos = wp.xyz;
-          vWorldNormal = normalize(mat3(modelMatrix) * normal);
-        }
-      `,
-      fragmentShader: /* glsl */ `
-        uniform float uTime;
-        uniform float uWaterHeight;
-        uniform float uWetHeight;
-        uniform vec3 uSunDirection;
-        uniform vec3 uSunColor;
-        varying vec3 vWorldPos;
-        varying vec3 vWorldNormal;
-
-        ${CAUSTICS_GLSL}
-
-        void main() {
-          vec3 n = normalize(vWorldNormal);
-          // Wet skin / fabric darkening & sheen below high-water mark on body
-          float wet = smoothstep(uWetHeight + 0.14, uWetHeight - 0.08, vWorldPos.y);
-          vec3 col = csm_DiffuseColor.rgb;
-          col = mix(col, col * vec3(0.76, 0.74, 0.72), wet * 0.55);
-          csm_DiffuseColor = vec4(col, 1.0);
-          csm_Roughness = mix(csm_Roughness, 0.22, wet * 0.72);
-
-          // Animated dual-layer underwater caustics dancing on submerged body parts
-          vec3 caustics = computeUnderwaterCaustics(vWorldPos, n, uSunDirection, uWaterHeight, uTime);
-          csm_Emissive = caustics * uSunColor * 0.58;
-        }
-      `
+      metalness
     });
-    this.causticMaterials.push(mat);
+    mat.userData.matType = matType;
     return mat;
+  }
+
+  private createSkinnedCharacterMaterial(): THREE.Material {
+    if (!this.appearance.useWaterCaustics) {
+      return SHARED_LAND_HUMAN_MAT;
+    }
+
+    const uniforms: HumanWaterUniforms = {
+      uTime: { value: 0 },
+      uWaterHeight: { value: 0 },
+      uWetHeight: { value: -2.0 },
+      uSunDirection: { value: new THREE.Vector3(0.35, 0.72, 0.58).normalize() },
+      uSunColor: { value: new THREE.Color(0xfff4dd) }
+    };
+    this.waterUniforms = uniforms;
+
+    const mat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      normalMap: HUMAN_DETAIL_NORMAL,
+      normalScale: new THREE.Vector2(0.18, 0.18),
+      roughness: 0.62,
+      metalness: 0.02
+    });
+    mat.customProgramCacheKey = () => 'skinned-human-caustics-pbr-v3';
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uTime = uniforms.uTime;
+      shader.uniforms.uWaterHeight = uniforms.uWaterHeight;
+      shader.uniforms.uWetHeight = uniforms.uWetHeight;
+      shader.uniforms.uSunDirection = uniforms.uSunDirection;
+      shader.uniforms.uSunColor = uniforms.uSunColor;
+
+      shader.vertexShader =
+        'attribute vec2 aMatProps;\nvarying vec2 vMatProps;\nvarying vec3 vHumanWorldPos;\nvarying vec3 vHumanWorldNormal;\n' +
+        shader.vertexShader
+          .replace(
+            '#include <begin_vertex>',
+            `#include <begin_vertex>
+             vMatProps = aMatProps;`
+          )
+          .replace(
+            '#include <worldpos_vertex>',
+            `#include <worldpos_vertex>
+             vHumanWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+             vHumanWorldNormal = normalize(mat3(modelMatrix) * objectNormal);`
+          );
+
+      shader.fragmentShader =
+        `uniform float uTime;
+         uniform float uWaterHeight;
+         uniform float uWetHeight;
+         uniform vec3 uSunDirection;
+         uniform vec3 uSunColor;
+         varying vec2 vMatProps;
+         varying vec3 vHumanWorldPos;
+         varying vec3 vHumanWorldNormal;
+         ${CAUSTICS_GLSL}
+        ` +
+        shader.fragmentShader
+          .replace(
+            '#include <roughnessmap_fragment>',
+            `#include <roughnessmap_fragment>
+             roughnessFactor = clamp(vMatProps.x, 0.08, 0.96);
+             float hWet = smoothstep(uWetHeight + 0.16, uWetHeight - 0.08, vHumanWorldPos.y);
+             diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.76, 0.74, 0.72), hWet * 0.52);
+             roughnessFactor = mix(roughnessFactor, 0.16, hWet * 0.78);`
+          )
+          .replace(
+            '#include <lights_fragment_end>',
+            `#include <lights_fragment_end>
+             float matType = vMatProps.y;
+             float viewRim = pow(1.0 - max(dot(normalize(vNormal), normalize(vViewPosition)), 0.0), 2.6);
+             if (matType < 0.5) {
+               reflectedLight.indirectDiffuse += diffuseColor.rgb * vec3(0.105, 0.056, 0.034);
+               reflectedLight.directDiffuse += diffuseColor.rgb * vec3(0.14, 0.06, 0.03) * viewRim;
+             } else if (matType < 1.5) {
+               reflectedLight.indirectDiffuse += vec3(0.12, 0.115, 0.11) * viewRim * (0.4 + 0.6 * diffuseColor.rgb);
+             }`
+          )
+          .replace(
+            '#include <emissivemap_fragment>',
+            `#include <emissivemap_fragment>
+             vec3 hCaustics = computeUnderwaterCaustics(vHumanWorldPos, normalize(vHumanWorldNormal), uSunDirection, uWaterHeight, uTime);
+             totalEmissiveRadiance += hCaustics * uSunColor * 0.58;`
+          );
+    };
+    return mat;
+  }
+
+  private bakeSkinnedCharacter(): void {
+    this.root.updateMatrixWorld(true);
+    const bones: THREE.Bone[] = [
+      this.hips,
+      this.spine,
+      this.chest,
+      this.neck,
+      this.head,
+      this.upperArmL,
+      this.forearmL,
+      this.upperArmR,
+      this.forearmR,
+      this.thighL,
+      this.shinL,
+      this.footL,
+      this.thighR,
+      this.shinR,
+      this.footR
+    ];
+
+    const parentIndexByBone = [-1, 0, 1, 2, 3, 2, 5, 2, 7, 0, 9, 10, 0, 12, 13];
+    const boneWorldPos = bones.map((b) => {
+      const p = new THREE.Vector3();
+      b.getWorldPosition(p);
+      return p;
+    });
+
+    const parts: THREE.BufferGeometry[] = [];
+    const tmpColor = new THREE.Color();
+    const tmpVert = new THREE.Vector3();
+
+    for (let boneIdx = 0; boneIdx < bones.length; boneIdx++) {
+      const bone = bones[boneIdx];
+      const parentIdx = parentIndexByBone[boneIdx];
+      const jointPos = boneWorldPos[boneIdx];
+      const directStaticChildren: THREE.Object3D[] = [];
+      for (const ch of bone.children) {
+        if (!(ch instanceof THREE.Bone)) {
+          directStaticChildren.push(ch);
+        }
+      }
+
+      for (const rootChild of directStaticChildren) {
+        rootChild.traverse((obj) => {
+          if (!(obj instanceof THREE.Mesh)) return;
+          const src = obj.geometry;
+          const g = src.index ? src.toNonIndexed() : src.clone();
+          g.applyMatrix4(obj.matrixWorld);
+          if (!g.attributes.normal) {
+            g.computeVertexNormals();
+          }
+
+          for (const attr of Object.keys(g.attributes)) {
+            if (attr !== 'position' && attr !== 'normal' && attr !== 'uv') {
+              g.deleteAttribute(attr);
+            }
+          }
+          g.morphAttributes = {};
+
+          const posAttr = g.attributes.position as THREE.BufferAttribute;
+          const normAttr = g.attributes.normal as THREE.BufferAttribute;
+          const vertCount = posAttr.count;
+          if (!g.attributes.uv) {
+            const synthUv = new Float32Array(vertCount * 2);
+            for (let v = 0; v < vertCount; v++) {
+              synthUv[v * 2] = posAttr.getX(v) * 6.0;
+              synthUv[v * 2 + 1] = posAttr.getY(v) * 6.0;
+            }
+            g.setAttribute('uv', new THREE.Float32BufferAttribute(synthUv, 2));
+          }
+          const srcMat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+          let matRough = 0.72;
+          let matType = 1.0;
+          if (srcMat && 'color' in srcMat && (srcMat as THREE.MeshStandardMaterial).color) {
+            const stdMat = srcMat as THREE.MeshStandardMaterial;
+            tmpColor.copy(stdMat.color);
+            matRough = typeof stdMat.roughness === 'number' ? stdMat.roughness : 0.72;
+            matType =
+              typeof stdMat.userData?.matType === 'number'
+                ? stdMat.userData.matType
+                : matRough <= 0.26
+                  ? 3.0
+                  : 1.0;
+          } else {
+            tmpColor.setHex(0xffffff);
+          }
+
+          const colors = new Float32Array(vertCount * 3);
+          const matProps = new Float32Array(vertCount * 2);
+          const skinIndices = new Uint16Array(vertCount * 4);
+          const skinWeights = new Float32Array(vertCount * 4);
+          for (let v = 0; v < vertCount; v++) {
+            tmpVert.fromBufferAttribute(posAttr, v);
+            const ny = normAttr.getY(v);
+            // Subtle baked anatomical vertical AO + sunlit top-contour warmth (eliminates flat clay shading!)
+            const ao = 0.89 + 0.11 * THREE.MathUtils.clamp(ny * 0.5 + 0.5, 0, 1);
+            const cOff = v * 3;
+            colors[cOff] = Math.min(1, tmpColor.r * ao);
+            colors[cOff + 1] = Math.min(1, tmpColor.g * (ao * 0.992));
+            colors[cOff + 2] = Math.min(1, tmpColor.b * (ao * 0.985));
+
+            matProps[v * 2] = matRough;
+            matProps[v * 2 + 1] = matType;
+
+            const sOff = v * 4;
+            // Smooth dual-bone joint weight blending near limb/torso seams (zero wooden-doll joint cracks!)
+            const dJoint = tmpVert.distanceTo(jointPos);
+            const blendRadius = boneIdx >= 5 ? 0.088 : 0.068;
+            if (parentIdx >= 0 && dJoint < blendRadius) {
+              const wParent = 0.44 * (1.0 - dJoint / blendRadius);
+              skinIndices[sOff] = boneIdx;
+              skinIndices[sOff + 1] = parentIdx;
+              skinWeights[sOff] = 1.0 - wParent;
+              skinWeights[sOff + 1] = wParent;
+            } else {
+              skinIndices[sOff] = boneIdx;
+              skinWeights[sOff] = 1.0;
+            }
+          }
+
+          g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+          g.setAttribute('aMatProps', new THREE.Float32BufferAttribute(matProps, 2));
+          g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(skinIndices, 4));
+          g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skinWeights, 4));
+          parts.push(g);
+        });
+        bone.remove(rootChild);
+      }
+    }
+
+    const merged = mergeGeometries(parts, false);
+    for (const p of parts) p.dispose();
+    if (!merged) return;
+
+    // Generous rest bounding sphere covers reclining, seated & swimming poses cleanly without per-frame recompute
+    merged.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 1.0, 0), 2.4);
+
+    const charMat = this.createSkinnedCharacterMaterial();
+    const skinned = new THREE.SkinnedMesh(merged, charMat);
+    skinned.castShadow = true;
+    skinned.receiveShadow = true;
+    skinned.name = 'SkinnedHumanCharacter';
+    this.root.add(skinned);
+    this.root.updateMatrixWorld(true);
+    skinned.bind(new THREE.Skeleton(bones));
   }
 
   private buildHair(style: HairStyle, mat: THREE.Material): void {
@@ -444,45 +910,41 @@ export class HumanCharacter {
       { y: 0.214, rx: 0.084, rz: 0.098, zOffset: -0.008 }, // Upper crown
       { y: 0.244, rx: 0.046, rz: 0.054, zOffset: -0.008 }, // Top dome
       { y: 0.252, rx: 0.008, rz: 0.010, zOffset: -0.008 }
-    ], 22);
+    ], 10);
     const dome = new THREE.Mesh(domeGeo, mat);
     dome.castShadow = true;
     dome.receiveShadow = true;
     this.head.add(dome);
 
     // Clean back-of-head nape volume (covers occipital curve smoothly behind ears)
-    const napeGeo = new THREE.SphereGeometry(0.094, 18, 12, Math.PI * 0.15, Math.PI * 0.7, Math.PI * 0.28, Math.PI * 0.56);
+    const napeGeo = new THREE.SphereGeometry(0.094, 8, 6, Math.PI * 0.15, Math.PI * 0.7, Math.PI * 0.28, Math.PI * 0.56);
     const nape = new THREE.Mesh(napeGeo, mat);
     nape.position.set(0, 0.138, -0.022);
     nape.rotation.y = Math.PI;
     nape.scale.set(1.02, 1.04, 1.05);
-    nape.castShadow = true;
     this.head.add(nape);
 
-    if (style === 'short_crop') {
-      const topSweep = new THREE.Mesh(new THREE.SphereGeometry(0.088, 16, 10), mat);
+    const topSweep = style === 'short_crop' ? new THREE.Mesh(new THREE.SphereGeometry(0.088, 8, 6), mat) : null;
+    if (topSweep) {
       topSweep.position.set(0, 0.218, 0.012);
       topSweep.scale.set(1.04, 0.56, 1.12);
-      topSweep.castShadow = true;
       this.head.add(topSweep);
     } else if (style === 'surfer_waves') {
       // Sculpted layered surfer flow sitting cleanly outside the hair dome
-      const waveCrown = new THREE.Mesh(new THREE.SphereGeometry(0.096, 18, 12), mat);
+      const waveCrown = new THREE.Mesh(new THREE.SphereGeometry(0.096, 8, 6), mat);
       waveCrown.position.set(0, 0.208, -0.005);
       waveCrown.scale.set(1.06, 0.64, 1.15);
-      waveCrown.castShadow = true;
       this.head.add(waveCrown);
 
       for (let i = 0; i < 6; i++) {
         const ang = (i - 2.5) * 0.44;
-        const lock = new THREE.Mesh(new THREE.CapsuleGeometry(0.026, 0.072, 6, 10), mat);
+        const lock = new THREE.Mesh(new THREE.CapsuleGeometry(0.026, 0.072, 2, 5), mat);
         lock.position.set(
           Math.sin(ang) * 0.092,
           0.168 - Math.abs(i - 2.5) * 0.008,
           -0.018 + Math.cos(ang) * 0.055
         );
         lock.rotation.set(0.32, ang, -ang * 0.28);
-        lock.castShadow = true;
         this.head.add(lock);
       }
     } else if (style === 'ponytail') {
@@ -491,7 +953,7 @@ export class HumanCharacter {
         { y: -0.08, rx: 0.044, rz: 0.042, zOffset: -0.032 },
         { y: -0.19, rx: 0.035, rz: 0.033, zOffset: -0.052 },
         { y: -0.27, rx: 0.012, rz: 0.012, zOffset: -0.064 }
-      ], 14);
+      ], 9);
       const tail = new THREE.Mesh(tailGeo, mat);
       tail.position.set(0, 0.175, -0.122);
       tail.castShadow = true;
@@ -502,56 +964,181 @@ export class HumanCharacter {
         { y: -0.10, rx: 0.114, rz: 0.072, zOffset: -0.046 },
         { y: 0.02, rx: 0.110, rz: 0.084, zOffset: -0.036 },
         { y: 0.12, rx: 0.100, rz: 0.094, zOffset: -0.024 }
-      ], 18);
+      ], 11);
       const drape = new THREE.Mesh(drapeGeo, mat);
       drape.position.set(0, 0.05, -0.014);
       drape.castShadow = true;
       this.head.add(drape);
     } else if (style === 'top_bun') {
-      const bun = new THREE.Mesh(new THREE.SphereGeometry(0.056, 16, 12), mat);
+      const bun = new THREE.Mesh(new THREE.SphereGeometry(0.056, 8, 6), mat);
       bun.position.set(0, 0.278, -0.036);
       bun.scale.set(1.06, 0.88, 1.06);
-      bun.castShadow = true;
       this.head.add(bun);
     } else if (style === 'curly_crown') {
       for (let i = 0; i < 9; i++) {
         const a = (i / 9) * Math.PI * 2;
-        const puff = new THREE.Mesh(new THREE.SphereGeometry(0.048, 12, 10), mat);
+        const puff = new THREE.Mesh(new THREE.SphereGeometry(0.048, 6, 5), mat);
         puff.position.set(Math.cos(a) * 0.070, 0.212 + (i % 2) * 0.022, Math.sin(a) * 0.074 - 0.014);
-        puff.castShadow = true;
         this.head.add(puff);
       }
     }
   }
 
   private buildSunglasses(): void {
-    const frameMat = new THREE.MeshStandardMaterial({ color: 0x16181c, roughness: 0.2, metalness: 0.4 });
-    const lensMat = new THREE.MeshPhysicalMaterial({
-      color: 0x0b1a24,
-      roughness: 0.08,
-      metalness: 0.45,
-      clearcoat: 1.0
-    });
+    const frameMat = this.createHumanMaterial(0x181b20, 0.18, 0.45, 3);
+    const lensMat = this.createHumanMaterial(0x0b1f2e, 0.06, 0.55, 3);
     const glasses = new THREE.Group();
-    glasses.position.set(0, 0.126, 0.098);
+    glasses.position.set(0, 0.123, 0.094);
     for (const side of [-1, 1]) {
-      const lens = new THREE.Mesh(new THREE.BoxGeometry(0.038, 0.025, 0.007), lensMat);
-      lens.position.set(side * 0.032, 0, 0);
+      // Rounded wayfarer rim & flush reflective lens wrapping subtly around the cheek/brow curve
+      const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.021, 0.019, 0.007, 7), frameMat);
+      rim.rotation.x = Math.PI / 2;
+      rim.rotation.z = -side * 0.18;
+      rim.scale.set(1.12, 1.0, 0.86);
+      rim.position.set(side * 0.033, 0, -0.002);
+      glasses.add(rim);
+
+      const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.0175, 0.016, 0.0085, 7), lensMat);
+      lens.rotation.x = Math.PI / 2;
+      lens.rotation.z = -side * 0.18;
+      lens.scale.set(1.10, 1.0, 0.84);
+      lens.position.set(side * 0.033, 0, -0.001);
       glasses.add(lens);
-      // Shorter neatly tucked temple arms resting right over ears (never poking behind head!)
-      const temple = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.005, 0.082), frameMat);
-      temple.position.set(side * 0.054, 0.003, -0.042);
+
+      const temple = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.004, 0.076), frameMat);
+      temple.position.set(side * 0.058, 0.003, -0.044);
       glasses.add(temple);
     }
-    const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.026, 0.005, 0.007), frameMat);
-    bridge.position.set(0, 0.005, 0);
+    const bridge = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.004, 0.005), frameMat);
+    bridge.position.set(0, 0.005, 0.002);
     glasses.add(bridge);
     this.head.add(glasses);
   }
 
+  private buildSunHat(ribbonHex: number): void {
+    const strawMat = new THREE.MeshStandardMaterial({ color: 0xdec08a, roughness: 0.92 });
+    const ribbonMat = new THREE.MeshStandardMaterial({ color: ribbonHex, roughness: 0.7 });
+    const hat = new THREE.Group();
+    hat.position.set(0, 0.215, -0.008);
+    hat.rotation.x = -0.08;
+
+    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.26, 0.014, 22), strawMat);
+    brim.castShadow = true;
+    hat.add(brim);
+
+    const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.095, 0.115, 0.095, 18), strawMat);
+    crown.position.y = 0.048;
+    crown.castShadow = true;
+    hat.add(crown);
+
+    const ribbon = new THREE.Mesh(new THREE.CylinderGeometry(0.116, 0.118, 0.022, 18), ribbonMat);
+    ribbon.position.y = 0.016;
+    hat.add(ribbon);
+
+    this.head.add(hat);
+  }
+
+  private buildBaseballCap(capHex: number): void {
+    const capMat = new THREE.MeshStandardMaterial({ color: capHex, roughness: 0.72 });
+    const trimMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.65 });
+    const cap = new THREE.Group();
+    cap.position.set(0, 0.195, -0.004);
+    cap.rotation.x = -0.06;
+
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(0.104, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.54),
+      capMat
+    );
+    dome.scale.set(0.98, 0.92, 1.08);
+    cap.add(dome);
+
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.145, 0.012, 0.115), capMat);
+    visor.position.set(0, 0.008, 0.108);
+    visor.rotation.x = 0.14;
+    cap.add(visor);
+
+    const emblem = new THREE.Mesh(new THREE.BoxGeometry(0.036, 0.024, 0.008), trimMat);
+    emblem.position.set(0, 0.044, 0.108);
+    cap.add(emblem);
+    this.head.add(cap);
+  }
+
+  private buildSnorkelMask(accentHex: number): void {
+    const rimMat = new THREE.MeshStandardMaterial({ color: 0x1b222a, roughness: 0.45 });
+    const glassMat = new THREE.MeshStandardMaterial({ color: 0x6ce5f5, roughness: 0.12, metalness: 0.25 });
+    const tubeMat = new THREE.MeshStandardMaterial({ color: accentHex, roughness: 0.4 });
+    const tipMat = new THREE.MeshStandardMaterial({ color: 0xff5a1f, roughness: 0.35 });
+
+    const mask = new THREE.Group();
+    mask.position.set(0, 0.124, 0.098);
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(0.112, 0.048, 0.026), rimMat);
+    mask.add(frame);
+    const lens = new THREE.Mesh(new THREE.BoxGeometry(0.098, 0.036, 0.029), glassMat);
+    mask.add(lens);
+    const strap = new THREE.Mesh(new THREE.TorusGeometry(0.096, 0.009, 5, 14), rimMat);
+    strap.rotation.x = Math.PI / 2;
+    strap.position.set(0, 0.006, -0.098);
+    mask.add(strap);
+
+    // J-shaped snorkel tube rising up along right temple with bright safety-orange top tip
+    const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.011, 0.011, 0.30, 7), tubeMat);
+    tube.position.set(0.088, 0.09, -0.012);
+    tube.rotation.z = -0.08;
+    mask.add(tube);
+    const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.012, 0.055, 7), tipMat);
+    tip.position.set(0.10, 0.24, -0.012);
+    mask.add(tip);
+    const mouth = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.009, 0.09, 6), rimMat);
+    mouth.rotation.z = Math.PI / 2;
+    mouth.position.set(0.044, -0.055, -0.004);
+    mask.add(mouth);
+
+    this.head.add(mask);
+  }
+
+  private buildLifeguardKit(): void {
+    const whiteMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55 });
+    const redBuoyMat = new THREE.MeshStandardMaterial({ color: 0xe63946, roughness: 0.32 });
+    const strapMat = new THREE.MeshStandardMaterial({ color: 0x1e252d, roughness: 0.72 });
+    const brassMat = new THREE.MeshStandardMaterial({ color: 0xe6bc55, roughness: 0.28, metalness: 0.8 });
+
+    // Authentic white Lifeguard Cross emblem on front & back of red rashguard
+    for (const zSign of [1, -1]) {
+      const zOff = zSign > 0 ? 0.132 : -0.126;
+      const barH = new THREE.Mesh(new THREE.BoxGeometry(0.085, 0.024, 0.012), whiteMat);
+      barH.position.set(0, 0.11, zOff);
+      this.chest.add(barH);
+      const barV = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.085, 0.012), whiteMat);
+      barV.position.set(0, 0.11, zOff);
+      this.chest.add(barV);
+    }
+
+    // Lanyard & brass whistle hanging cleanly on chest
+    const cord = new THREE.Mesh(new THREE.TorusGeometry(0.072, 0.005, 5, 14), strapMat);
+    cord.rotation.x = Math.PI / 2 + 0.52;
+    cord.position.set(0, 0.20, 0.045);
+    this.chest.add(cord);
+    const whistle = new THREE.Mesh(new THREE.CylinderGeometry(0.010, 0.010, 0.036, 6), brassMat);
+    whistle.rotation.z = Math.PI / 2;
+    whistle.position.set(0, 0.135, 0.138);
+    this.chest.add(whistle);
+
+    // Classic bright red Lifeguard Rescue Torpedo Buoy carried in left hand!
+    const buoy = new THREE.Group();
+    buoy.position.set(-0.04, -0.31, 0.05);
+    buoy.rotation.set(0.55, 0.12, 0.18);
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.075, 0.44, 5, 8), redBuoyMat);
+    body.scale.set(0.75, 1.0, 1.15);
+    buoy.add(body);
+    const handle = new THREE.Mesh(new THREE.TorusGeometry(0.055, 0.011, 5, 10), strapMat);
+    handle.position.set(0.055, 0.0, 0);
+    buoy.add(handle);
+    this.forearmL.add(buoy);
+  }
+
   private buildArm(
-    upperPivot: THREE.Group,
-    forearmPivot: THREE.Group,
+    upperPivot: THREE.Bone,
+    forearmPivot: THREE.Bone,
     side: -1 | 1,
     shoulderX: number,
     skinMat: THREE.Material,
@@ -562,20 +1149,14 @@ export class HumanCharacter {
     upperPivot.position.set(side * shoulderX, 0.185, 0.0);
     this.chest.add(upperPivot);
 
-    // Smooth blended deltoid shoulder cap tucked into torso
-    const shoulderCap = new THREE.Mesh(new THREE.SphereGeometry(0.052 * rScale, 12, 9), sleeveMat);
-    shoulderCap.scale.set(0.95, 1.02, 0.96);
-    shoulderCap.position.set(-side * 0.008, -0.005, 0);
-    shoulderCap.castShadow = true;
-    upperPivot.add(shoulderCap);
-
-    // Upper arm loft (extends down -Y with seamless shoulder taper)
+    // Smooth tapered deltoid/upper-arm loft starting seamlessly inside chest clavicle (no wooden ball-joints!)
     const upperGeo = createAnatomicalLoft([
-      { y: -0.29, rx: 0.037 * rScale, rz: 0.038 * rScale },
-      { y: -0.16, rx: 0.046 * rScale, rz: 0.048 * rScale },
-      { y: -0.02, rx: 0.050 * rScale, rz: 0.052 * rScale }
-    ], 12);
-    const upperMesh = new THREE.Mesh(upperGeo, skinMat);
+      { y: -0.305, rx: 0.038 * rScale, rz: 0.039 * rScale },
+      { y: -0.17, rx: 0.046 * rScale, rz: 0.048 * rScale },
+      { y: -0.025, rx: 0.053 * rScale, rz: 0.054 * rScale, xOffset: -side * 0.008 },
+      { y: 0.038, rx: 0.044 * rScale, rz: 0.046 * rScale, xOffset: -side * 0.024 }
+    ], 8);
+    const upperMesh = new THREE.Mesh(upperGeo, sleeveMat !== skinMat ? skinMat : skinMat);
     upperMesh.castShadow = true;
     upperMesh.receiveShadow = true;
     upperPivot.add(upperMesh);
@@ -583,43 +1164,67 @@ export class HumanCharacter {
     // Short sleeve overlay if wearing rashguard/shirt
     if (sleeveMat !== skinMat) {
       const sleeveGeo = createAnatomicalLoft([
-        { y: -0.15, rx: 0.053 * rScale, rz: 0.055 * rScale },
-        { y: -0.02, rx: 0.058 * rScale, rz: 0.060 * rScale }
-      ], 11);
+        { y: -0.155, rx: 0.053 * rScale, rz: 0.055 * rScale },
+        { y: -0.02, rx: 0.058 * rScale, rz: 0.060 * rScale, xOffset: -side * 0.008 },
+        { y: 0.040, rx: 0.047 * rScale, rz: 0.048 * rScale, xOffset: -side * 0.024 }
+      ], 8);
       const sleeve = new THREE.Mesh(sleeveGeo, sleeveMat);
       sleeve.castShadow = true;
       upperPivot.add(sleeve);
     }
 
-    // Elbow & Forearm
+    // Elbow & Forearm (seamless overlapping top collar blended by dual-bone skinning!)
     forearmPivot.position.set(0, -0.29, 0);
     upperPivot.add(forearmPivot);
 
-    const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.037 * rScale, 9, 7), skinMat);
-    forearmPivot.add(elbow);
-
     const foreGeo = createAnatomicalLoft([
-      { y: -0.26, rx: 0.027 * rScale, rz: 0.025 * rScale },
+      { y: -0.265, rx: 0.026 * rScale, rz: 0.024 * rScale },
       { y: -0.14, rx: 0.036 * rScale, rz: 0.035 * rScale },
-      { y: -0.02, rx: 0.040 * rScale, rz: 0.039 * rScale }
-    ], 10);
+      { y: -0.015, rx: 0.040 * rScale, rz: 0.039 * rScale },
+      { y: 0.022, rx: 0.034 * rScale, rz: 0.035 * rScale }
+    ], 8);
     const foreMesh = new THREE.Mesh(foreGeo, skinMat);
     foreMesh.castShadow = true;
     foreMesh.receiveShadow = true;
     forearmPivot.add(foreMesh);
 
-    // Sculpted hand
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.034 * rScale, 9, 8), skinMat);
-    hand.position.set(0, -0.30, 0.008);
-    hand.scale.set(0.68, 1.48, 0.95);
-    hand.castShadow = true;
-    forearmPivot.add(hand);
+    // Optional beach wristwatch with metallic dial face on left wrist
+    if (side === -1 && this.appearance.watch) {
+      const watchBand = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.030 * rScale, 0.030 * rScale, 0.024, 8),
+        this.createHumanMaterial(0x222933, 0.45, 0.1, 1)
+      );
+      watchBand.position.set(0, -0.245, 0);
+      forearmPivot.add(watchBand);
+      const watchFace = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.014, 0.014, 0.010, 6),
+        this.createHumanMaterial(0xdbe8f2, 0.10, 0.5, 3)
+      );
+      watchFace.rotation.z = Math.PI / 2;
+      watchFace.position.set(-0.028 * rScale, -0.245, 0.005);
+      forearmPivot.add(watchFace);
+    }
+
+    // Smooth sculpted organic hand: tapered oval palm -> slender rounded fingers + smooth angled thumb (ZERO cube blocks!)
+    const handGeo = createAnatomicalLoft([
+      { y: -0.362, rx: 0.011 * rScale, rz: 0.022 * rScale, xOffset: -side * 0.006, zOffset: 0.012 }, // Tapered fingertips
+      { y: -0.322, rx: 0.014 * rScale, rz: 0.030 * rScale, xOffset: -side * 0.003, zOffset: 0.010 }, // Mid-fingers
+      { y: -0.286, rx: 0.017 * rScale, rz: 0.032 * rScale, zOffset: 0.006 },                         // Palm
+      { y: -0.258, rx: 0.022 * rScale, rz: 0.022 * rScale }                                          // Wrist blend
+    ], 6);
+    const handMesh = new THREE.Mesh(handGeo, skinMat);
+    forearmPivot.add(handMesh);
+
+    const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.0085 * rScale, 0.028 * rScale, 1, 4), skinMat);
+    thumb.position.set(-side * 0.008, -0.295, 0.034);
+    thumb.rotation.set(0.48, 0, -side * 0.25);
+    forearmPivot.add(thumb);
   }
 
   private buildLeg(
-    thighPivot: THREE.Group,
-    shinPivot: THREE.Group,
-    footPivot: THREE.Group,
+    thighPivot: THREE.Bone,
+    shinPivot: THREE.Bone,
+    footPivot: THREE.Bone,
     side: -1 | 1,
     hipX: number,
     skinMat: THREE.Material,
@@ -631,55 +1236,48 @@ export class HumanCharacter {
     thighPivot.position.set(side * hipX, -0.04, 0.0);
     this.hips.add(thighPivot);
 
-    // Hip socket cap
-    const hipCap = new THREE.Mesh(
-      new THREE.SphereGeometry(0.078 * rScale, 10, 8),
-      shortsLength > 0 ? shortsMat : skinMat
-    );
-    thighPivot.add(hipCap);
-
-    // Sculpted thigh
+    // Sculpted seamless thigh overlapping smoothly into pelvis & knee (no rigid ball spheres!)
     const thighGeo = createAnatomicalLoft([
-      { y: -0.44, rx: 0.054 * rScale, rz: 0.056 * rScale },
-      { y: -0.24, rx: 0.072 * rScale, rz: 0.076 * rScale, zOffset: 0.004 },
-      { y: -0.02, rx: 0.082 * rScale, rz: 0.084 * rScale }
-    ], 12);
+      { y: -0.455, rx: 0.054 * rScale, rz: 0.056 * rScale },
+      { y: -0.24, rx: 0.073 * rScale, rz: 0.076 * rScale, zOffset: 0.004 },
+      { y: -0.02, rx: 0.083 * rScale, rz: 0.085 * rScale },
+      { y: 0.045, rx: 0.072 * rScale, rz: 0.076 * rScale }
+    ], 8);
     const thighMesh = new THREE.Mesh(thighGeo, skinMat);
     thighMesh.castShadow = true;
     thighMesh.receiveShadow = true;
     thighPivot.add(thighMesh);
 
-    // Boardshorts leg sleeve
+    // Boardshorts leg sleeve overlapping smoothly up into pelvis (ZERO hip/thigh skin slit when walking!)
     if (shortsLength > 0) {
       const legShortGeo = createAnatomicalLoft([
-        { y: -shortsLength, rx: 0.080 * rScale, rz: 0.084 * rScale },
-        { y: -0.01, rx: 0.089 * rScale, rz: 0.091 * rScale }
-      ], 12);
+        { y: -shortsLength, rx: 0.081 * rScale, rz: 0.085 * rScale },
+        { y: -0.02, rx: 0.090 * rScale, rz: 0.093 * rScale },
+        { y: 0.068, rx: 0.088 * rScale, rz: 0.090 * rScale }
+      ], 8);
       const legShort = new THREE.Mesh(legShortGeo, shortsMat);
       legShort.castShadow = true;
       legShort.receiveShadow = true;
       thighPivot.add(legShort);
     }
 
-    // Knee & sculpted calf/shin
+    // Seamless knee & sculpted calf/shin
     shinPivot.position.set(0, -0.44, 0);
     thighPivot.add(shinPivot);
 
-    const knee = new THREE.Mesh(new THREE.SphereGeometry(0.052 * rScale, 10, 8), skinMat);
-    shinPivot.add(knee);
-
     const shinGeo = createAnatomicalLoft([
-      { y: -0.41, rx: 0.034 * rScale, rz: 0.036 * rScale }, // Ankle
-      { y: -0.26, rx: 0.048 * rScale, rz: 0.052 * rScale, zOffset: -0.008 }, // Calf peak
+      { y: -0.415, rx: 0.034 * rScale, rz: 0.036 * rScale }, // Ankle
+      { y: -0.26, rx: 0.049 * rScale, rz: 0.053 * rScale, zOffset: -0.008 }, // Calf peak
       { y: -0.14, rx: 0.056 * rScale, rz: 0.060 * rScale, zOffset: -0.010 },
-      { y: -0.02, rx: 0.052 * rScale, rz: 0.054 * rScale }
-    ], 11);
+      { y: -0.015, rx: 0.054 * rScale, rz: 0.056 * rScale },
+      { y: 0.030, rx: 0.048 * rScale, rz: 0.050 * rScale }
+    ], 8);
     const shinMesh = new THREE.Mesh(shinGeo, skinMat);
     shinMesh.castShadow = true;
     shinMesh.receiveShadow = true;
     shinPivot.add(shinMesh);
 
-    // Bare anatomical beach foot
+    // Bare anatomical beach foot + optional flip-flop sandals OR scuba swim fins!
     footPivot.position.set(0, -0.42, 0.0);
     shinPivot.add(footPivot);
 
@@ -687,11 +1285,30 @@ export class HumanCharacter {
       { y: -0.05, rx: 0.042, rz: 0.115, zOffset: 0.055 },
       { y: -0.02, rx: 0.044, rz: 0.110, zOffset: 0.050 },
       { y: 0.015, rx: 0.036, rz: 0.065, zOffset: 0.020 }
-    ], 10);
+    ], 8);
     const footMesh = new THREE.Mesh(footGeo, skinMat);
-    footMesh.castShadow = true;
     footMesh.receiveShadow = true;
     footPivot.add(footMesh);
+
+    if (this.appearance.snorkelGear) {
+      const finMat = new THREE.MeshStandardMaterial({ color: this.appearance.secondaryColor, roughness: 0.42 });
+      const fin = new THREE.Mesh(new THREE.BoxGeometry(0.115, 0.016, 0.34), finMat);
+      fin.position.set(0, -0.045, 0.18);
+      footPivot.add(fin);
+    } else if (this.appearance.sandals) {
+      const soleMat = this.createHumanMaterial(this.appearance.secondaryColor, 0.78, 0.0, 1);
+      const sole = new THREE.Mesh(new THREE.BoxGeometry(0.092, 0.015, 0.24), soleMat);
+      sole.position.set(0, -0.054, 0.055);
+      footPivot.add(sole);
+      // Authentic V-shaped flip-flop toe straps!
+      for (const sSide of [-1, 1]) {
+        const strap = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.012, 0.095), soleMat);
+        strap.position.set(sSide * 0.024, -0.014, 0.088);
+        strap.rotation.y = -sSide * 0.36;
+        strap.rotation.x = 0.30;
+        footPivot.add(strap);
+      }
+    }
   }
 
   private dampRot(obj: THREE.Object3D, tx: number, ty: number, tz: number, k: number): void {
@@ -712,7 +1329,8 @@ export class HumanCharacter {
     swimPitch: number,
     waterHeight: number,
     sunDirection: THREE.Vector3,
-    sunColor: THREE.Color
+    sunColor: THREE.Color,
+    headLookYaw = 0
   ): { footPlant: FootPlantEvent | null; swimStroke: boolean } {
     const k = 1.0 - Math.exp(-12.0 * dt);
     let footPlant: FootPlantEvent | null = null;
@@ -725,9 +1343,9 @@ export class HumanCharacter {
       this.wetLevel = Math.max(this.root.position.y - 0.5, this.wetLevel - 0.04 * dt);
     }
 
-    // Update character caustics & wetness uniforms
-    for (let i = 0; i < this.causticMaterials.length; i++) {
-      const u = this.causticMaterials[i].uniforms;
+    // Update character caustics & wetness uniforms (only enabled on water-touching characters)
+    if (this.waterUniforms) {
+      const u = this.waterUniforms;
       u.uTime.value = elapsedTime;
       u.uWaterHeight.value = waterHeight;
       u.uWetHeight.value = this.wetLevel;
@@ -746,6 +1364,10 @@ export class HumanCharacter {
       this.animPhase += dt * (4.2 + speedNorm * 3.2);
     } else if (state === 'tread') {
       this.animPhase += dt * 3.1;
+    } else if (state === 'dance') {
+      this.animPhase += dt * 5.6;
+    } else if (state === 'wave') {
+      this.animPhase += dt * 4.8;
     } else {
       this.animPhase += dt * 1.65;
     }
@@ -911,31 +1533,285 @@ export class HumanCharacter {
       thLz = -0.08;
       thRz = 0.08;
     } else if (state === 'lounge') {
-      // Seated reclined comfortably on wooden beach lounge chair
-      hipY = 0.44;
-      hipRx = -0.62;
-      spineRx = -0.14;
-      headRx = 0.32;
-      headRy = Math.sin(elapsedTime * 0.4 + this.root.id) * 0.25;
-      uaLx = -0.35;
-      uaRx = -0.35;
-      uaLz = -0.26;
-      uaRz = 0.26;
-      faLx = -0.45;
-      faRx = -0.45;
+      // Seated reclined comfortably against the angled lounge chair backrest & pillow (pelvis ON cushion, arms on armrests!)
+      hipY = 0.515;
+      hipRx = -0.76;
+      spineRx = -0.10;
+      headRx = 0.28;
+      headRy = Math.sin(elapsedTime * 0.4 + this.root.id) * 0.22;
+      uaLx = -0.20;
+      uaRx = -0.20;
+      uaLz = -0.24;
+      uaRz = 0.24;
+      faLx = -0.46;
+      faRx = -0.46;
       thLx = -0.92;
       thRx = -0.88;
-      shLx = 0.22;
-      shRx = 0.28;
+      shLx = 0.14;
+      shRx = 0.12;
+      ftLx = 0.28;
+      ftRx = 0.32;
       thLz = -0.06;
       thRz = 0.06;
+    } else if (state === 'sit_bar') {
+      // Seated upright FLUSH ON TOP of tall wooden barstool (~0.70m seat) with heels near brass foot rail!
+      const g = Math.sin(elapsedTime * 1.9 + this.root.id);
+      hipY = 0.720;
+      spineRx = 0.05;
+      headRy = Math.sin(elapsedTime * 0.9 + this.root.id) * 0.22;
+      uaLx = -0.45 + g * 0.12;
+      faLx = -0.95;
+      uaRx = -0.32 - g * 0.10;
+      faRx = -0.78;
+      uaLz = -0.14;
+      uaRz = 0.14;
+      thLx = -1.46;
+      thRx = -1.42;
+      shLx = 1.48;
+      shRx = 1.44;
+    } else if (state === 'sit_chair') {
+      // Seated squarely on bench, café chair, or picnic bench (~0.45m seat, foot soles flat ON TOP of wood!)
+      const g = Math.sin(elapsedTime * 1.65 + this.root.id * 1.3);
+      const g2 = Math.cos(elapsedTime * 1.2 + this.root.id);
+      hipY = 0.54;
+      spineRx = 0.03;
+      spineRy = g2 * 0.05;
+      headRy = Math.sin(elapsedTime * 0.85 + this.root.id) * 0.24;
+      uaLx = -0.34 + g * 0.12;
+      faLx = -0.82 - g * 0.08;
+      uaRx = -0.26 - g2 * 0.08;
+      faRx = -0.68;
+      uaLz = -0.15;
+      uaRz = 0.15;
+      thLx = -1.52;
+      thRx = -1.48;
+      shLx = 1.48;
+      shRx = 1.44;
+    } else if (state === 'play_ball') {
+      // Energetic playful beach-ball / volleyball jumping, tossing & volleying!
+      const hop = Math.max(0, Math.sin(elapsedTime * 3.4 + this.root.id * 1.3));
+      const swing = Math.sin(elapsedTime * 3.4 + this.root.id * 1.3);
+      hipY = 0.93 + hop * 0.18;
+      spineRx = 0.12 - hop * 0.16;
+      headRx = -0.22;
+      uaLx = -1.45 - hop * 0.95;
+      uaRx = -1.45 - hop * 0.95;
+      uaLz = -0.24 - swing * 0.14;
+      uaRz = 0.24 + swing * 0.14;
+      faLx = -0.35 + hop * 0.25;
+      faRx = -0.35 + hop * 0.25;
+      thLx = -0.24 + hop * 0.32;
+      thRx = -0.18 + hop * 0.24;
+      shLx = 0.42 - hop * 0.28;
+      shRx = 0.36 - hop * 0.24;
+    } else if (state === 'jump' || state === 'fall') {
+      const isJump = state === 'jump';
+      const flail = Math.sin(elapsedTime * 7.5 + this.root.id) * 0.14;
+      hipY = isJump ? 0.96 : 0.91;
+      hipRx = isJump ? -0.10 : 0.14;
+      spineRx = isJump ? -0.06 : 0.18;
+      headRx = isJump ? -0.12 : 0.24;
+      uaLx = isJump ? -2.25 : -2.65 + flail;
+      uaRx = isJump ? -2.25 : -2.65 - flail;
+      uaLz = -0.52;
+      uaRz = 0.52;
+      faLx = -0.35;
+      faRx = -0.35;
+      thLx = isJump ? -0.78 : -0.45 + flail;
+      thRx = isJump ? -0.42 : -0.28 - flail;
+      shLx = isJump ? 1.15 : 0.75;
+      shRx = isJump ? 0.72 : 0.58;
+      ftLx = 0.35;
+      ftRx = 0.35;
+    } else if (state === 'slide') {
+      // Seated tucked slide pose gliding cheerfully down the water chute!
+      const joy = Math.sin(elapsedTime * 5.0 + this.root.id) * 0.12;
+      hipY = 0.24;
+      hipRx = -0.42;
+      spineRx = -0.22;
+      headRx = 0.14;
+      uaLx = -2.20 + joy;
+      uaRx = -2.20 - joy;
+      uaLz = -0.45;
+      uaRz = 0.45;
+      faLx = -0.28;
+      faRx = -0.28;
+      thLx = -1.25;
+      thRx = -1.18;
+      shLx = 0.36;
+      shRx = 0.32;
+      ftLx = 0.32;
+      ftRx = 0.32;
+    } else if (state === 'yoga') {
+      // Mindful ocean-facing sun-salutation / tree-pose seaside stretching
+      const flow = 0.5 + 0.5 * Math.sin(elapsedTime * 0.65 + this.root.id * 1.4);
+      hipY = 0.94 - flow * 0.06;
+      spineRx = -0.04 * flow;
+      headRx = -0.08 * flow;
+      uaLx = THREE.MathUtils.lerp(-0.45, -2.85, flow);
+      uaRx = THREE.MathUtils.lerp(-0.45, -2.85, flow);
+      uaLz = THREE.MathUtils.lerp(-0.75, -0.18, flow);
+      uaRz = THREE.MathUtils.lerp(0.75, 0.18, flow);
+      faLx = THREE.MathUtils.lerp(-0.62, -0.25, flow);
+      faRx = THREE.MathUtils.lerp(-0.62, -0.25, flow);
+      thLx = -0.08 * flow;
+      thRx = 0.08 * flow;
+      shLx = 0.12 * flow;
+      shRx = 0.06;
+    } else if (state === 'rinse') {
+      // Rinsing off saltwater hair under outdoor beach shower
+      const scrub = Math.sin(elapsedTime * 3.8 + this.root.id);
+      hipY = 0.95;
+      spineRx = -0.06;
+      headRx = -0.22 + scrub * 0.08;
+      uaLx = -2.35 + scrub * 0.14;
+      uaRx = -2.35 - scrub * 0.14;
+      uaLz = -0.28;
+      uaRz = 0.28;
+      faLx = -1.15 + scrub * 0.18;
+      faRx = -1.15 - scrub * 0.18;
+      thLx = -0.04;
+      thRx = 0.04;
+    } else if (state === 'build_sand') {
+      // Kneeling/crouching playfully while sculpting wet beach sandcastle
+      const scoop = Math.sin(elapsedTime * 2.8 + this.root.id * 1.7);
+      hipY = 0.56;
+      hipRx = 0.18;
+      spineRx = 0.38 + scoop * 0.06;
+      headRx = 0.16;
+      uaLx = -1.05 + scoop * 0.28;
+      uaRx = -1.00 - scoop * 0.22;
+      uaLz = -0.16;
+      uaRz = 0.16;
+      faLx = -0.58 - scoop * 0.24;
+      faRx = -0.52 + scoop * 0.20;
+      thLx = -1.35;
+      thRx = -1.25;
+      shLx = 1.68;
+      shRx = 1.56;
+    } else if (state === 'dance') {
+      // Upbeat tropical Tiki groove: rhythmic hip bounce, torso sway & alternating raised arms
+      const beat = Math.sin(this.animPhase);
+      const halfBeat = Math.cos(this.animPhase * 0.5);
+      hipY = 0.92 + Math.abs(beat) * 0.045;
+      hipRy = halfBeat * 0.18;
+      hipRz = beat * 0.085;
+      spineRy = -halfBeat * 0.16;
+      spineRz = -beat * 0.06;
+      chestRy = beat * 0.14;
+      headRy = halfBeat * 0.16;
+      headRx = Math.abs(beat) * 0.08 - 0.04;
+      uaLx = -0.95 + beat * 0.45;
+      uaRx = -0.95 - beat * 0.45;
+      uaLz = -0.42 - Math.max(0, beat) * 0.25;
+      uaRz = 0.42 + Math.max(0, -beat) * 0.25;
+      faLx = -1.05 - beat * 0.32;
+      faRx = -1.05 + beat * 0.32;
+      thLx = -0.14 + Math.max(0, beat) * 0.22;
+      thRx = -0.14 + Math.max(0, -beat) * 0.22;
+      shLx = 0.22 + Math.max(0, beat) * 0.25;
+      shRx = 0.22 + Math.max(0, -beat) * 0.25;
+    } else if (state === 'wave') {
+      // Friendly overhead hand wave & warm head nod to nearby beachgoers
+      const w = Math.sin(this.animPhase * 1.35);
+      hipY = 0.95;
+      hipRz = 0.035;
+      spineRy = -0.06;
+      headRy = w * 0.08;
+      headRx = Math.sin(this.animPhase * 0.7) * 0.06;
+      uaLx = -0.12;
+      uaLz = -0.16;
+      faLx = -0.24;
+      uaRx = -2.45 + w * 0.12;
+      uaRz = 0.38 + w * 0.28;
+      faRx = -0.45 + Math.cos(this.animPhase * 1.35) * 0.32;
+    } else if (state === 'scan_horizon') {
+      // Patrol Lifeguard shading eyes & attentively scanning offshore swimmers left-to-right!
+      const scan = Math.sin(elapsedTime * 0.85 + this.root.id);
+      hipY = 0.95;
+      spineRy = scan * 0.16;
+      headRy = scan * 0.38;
+      headRx = -0.05;
+      uaLx = -0.15;
+      uaLz = -0.18;
+      faLx = -0.35;
+      uaRx = -1.95;
+      uaRz = 0.42;
+      faRx = -1.65;
+    } else if (state === 'whistle_signal') {
+      // Lifeguard blowing whistle while waving arm high overhead to wave swimmers back!
+      const sig = Math.sin(elapsedTime * 6.5);
+      hipY = 0.95;
+      spineRx = -0.04;
+      headRx = -0.08;
+      uaLx = -0.45;
+      uaLz = -0.22;
+      faLx = -0.82;
+      uaRx = -2.65 + sig * 0.18;
+      uaRz = 0.48 + sig * 0.32;
+      faRx = -0.35 + sig * 0.22;
+    } else if (state === 'snorkel_kick') {
+      // Face-down buoyant coral-reef snorkeling with gentle swim-fin flutter kicks!
+      const kick = Math.sin(elapsedTime * 4.4 + this.root.id);
+      hipY = 0.86;
+      hipRx = Math.PI * 0.49;
+      headRx = -0.16;
+      uaLx = -0.22;
+      uaRx = -0.22;
+      uaLz = -0.38;
+      uaRz = 0.38;
+      faLx = -0.35;
+      faRx = -0.35;
+      thLx = kick * 0.34;
+      thRx = -kick * 0.34;
+      shLx = 0.24 + Math.max(0, -kick) * 0.28;
+      shRx = 0.24 + Math.max(0, kick) * 0.28;
+      ftLx = 0.65;
+      ftRx = 0.65;
+    } else if (state === 'float_tube') {
+      // Reclined lazily back inside an inflatable ocean donut ring with arms draped comfortably over the tube!
+      const sway = Math.sin(elapsedTime * 1.1 + this.root.id) * 0.08;
+      hipY = 0.35;
+      hipRx = -0.82;
+      spineRx = -0.14;
+      headRx = 0.32;
+      headRy = sway * 1.6;
+      uaLx = -0.16;
+      uaRx = -0.16;
+      uaLz = -0.58;
+      uaRz = 0.58;
+      faLx = -0.34;
+      faRx = -0.34;
+      thLx = -1.05;
+      thRx = -1.02;
+      shLx = 0.68 + sway;
+      shRx = 0.68 - sway;
+    } else if (state === 'sup_paddle') {
+      // Athletic Stand-Up Paddleboarder balanced over knees sweeping a long SUP paddle!
+      const stroke = Math.sin(elapsedTime * 2.2 + this.root.id);
+      hipY = 0.90;
+      spineRx = 0.14 + stroke * 0.06;
+      spineRy = stroke * 0.22;
+      uaLx = -0.78 + stroke * 0.42;
+      uaRx = -1.05 + stroke * 0.38;
+      uaLz = -0.18;
+      uaRz = 0.26;
+      faLx = -0.72;
+      faRx = -0.58;
+      thLx = -0.20;
+      thRx = -0.18;
+      shLx = 0.24;
+      shRx = 0.22;
     }
 
     this.hips.position.y = THREE.MathUtils.lerp(this.hips.position.y, hipY, k);
     this.dampRot(this.hips, hipRx, hipRy, hipRz, k);
     this.dampRot(this.spine, spineRx, spineRy, spineRz, k);
     this.dampRot(this.chest, chestRx, chestRy, 0, k);
-    this.dampRot(this.head, headRx, headRy, 0, k);
+    // Natural subtle breathing chest expansion + live head-glance toward nearby player/interest!
+    const breath = 1.0 + Math.sin(elapsedTime * 2.1 + this.root.id * 1.7) * 0.022;
+    this.chest.scale.set(1.0 + (breath - 1.0) * 0.45, 1.0, breath);
+    this.dampRot(this.head, headRx, THREE.MathUtils.clamp(headRy + headLookYaw, -0.78, 0.78), 0, k);
 
     // Handle continuous rotation cleanly for freestyle arms
     if ((state === 'swim_surface' || state === 'swim_underwater') && !(state === 'swim_underwater' && speedNorm < 0.75)) {

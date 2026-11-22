@@ -2,3 +2,7 @@ node_modules/
 dist/
 .DS_Store
 *.log
+*.zip
+fable5.2 beach project/
+gemini4neonbeachprojectfirstversion/
+qa_*/

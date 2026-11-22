@@ -1,281 +1,346 @@
 import * as THREE from 'three';
-import CustomShaderMaterial from 'three-custom-shader-material/vanilla';
 import { getTerrainHeight } from './terrainMath';
 import { FOOTPRINT_BOUNDS, FootprintSystem } from './FootprintSystem';
 import { GERSTNER_GLSL } from '../ocean/wavePhysics';
 import { CAUSTICS_GLSL } from '../shaders/causticsChunk';
-
-function loadTiledTexture(path: string, isSRGB: boolean): THREE.Texture {
-  const loader = new THREE.TextureLoader();
-  const tex = loader.load(path);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.anisotropy = 8;
-  tex.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-  return tex;
-}
+import { makeGrainTexture, makeNoiseTexture } from '../utils/proceduralNoise';
+import { loadTiledTex } from '../utils/pbrMaterials';
 
 /**
- * Expanded (+50% larger) high-resolution coastal bay & seabed terrain powered by
- * real Poly Haven CC0 photorealistic sand PBR textures (coast_sand_01 Diffuse, Normal, Roughness)
- * with dual-scale anti-tiling sampling, quartz micro-sparkle glints, dynamic wet-to-dry
- * shoreline sheen, real-time 2048x2048 RTT human footprints, and animated seabed caustics.
+ * Photorealistic Coastal Silica Sand, Grassy Dunes & Seabed Terrain:
+ *  - Dual-frequency procedural FBM noise + normal-mapped fine sand grain (zero photo tiling!)
+ *  - Sunlit warm pale silica beach palette with shell flecks, wind ripples & seabed tide ridges
+ *  - Dual-tier shoreline wetness + glassy specular swash sheen as waves recede
+ *  - Shadow-masked two-scale quartz micro-glints that glitter in direct sun & vanish cleanly in shade
+ *  - 2048x2048 RTT human footprint vertex displacement, compacted darkening & steep rim normals
+ *  - Direct optical wave-interference caustics & aquatic light absorption on submerged seabed
  */
 export class CoastalTerrain {
   public readonly mesh: THREE.Mesh;
-  public readonly material: CustomShaderMaterial;
+  public readonly material: THREE.MeshStandardMaterial;
+  public readonly noiseTexture: THREE.DataTexture;
+  public readonly grainTexture: THREE.DataTexture;
+
+  private readonly uniforms: {
+    uNoise: { value: THREE.DataTexture };
+    uGrain: { value: THREE.DataTexture };
+    uGrassDiff: { value: THREE.Texture };
+    uGrassNor: { value: THREE.Texture };
+    uRockDiff: { value: THREE.Texture };
+    uFootprintMap: { value: THREE.Texture };
+    uFootBoundsMin: { value: THREE.Vector2 };
+    uFootBoundsSize: { value: THREE.Vector2 };
+    uFootTexel: { value: THREE.Vector2 };
+    uTime: { value: number };
+    uWaveIntensity: { value: number };
+    uSunDirection: { value: THREE.Vector3 };
+    uSunColor: { value: THREE.Color };
+    uSunPower: { value: number };
+  };
 
   constructor(footprints: FootprintSystem) {
-    const segX = 320;
-    const segZ = 320;
+    // 80x80 vertex grid paired with fine normal grain & shadow-masked micro-glints
+    const segX = 80;
+    const segZ = 80;
     const geo = new THREE.PlaneGeometry(1, 1, segX, segZ);
     geo.rotateX(-Math.PI / 2);
 
     const pos = geo.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < pos.count; i++) {
-      const nx = pos.getX(i) * 2.0; // -1..1
-      const nz = pos.getZ(i) * 2.0; // -1..1
+      const nx = pos.getX(i) * 2.0;
+      const nz = pos.getZ(i) * 2.0;
 
-      // Expanded +50% coverage: X in [-165, +165], Z in [-102, +205]
-      const x = Math.sign(nx) * (Math.abs(nx) * 92.0 + Math.pow(Math.abs(nx), 2.35) * 76.0);
+      // Covers X: [-210, +210], Z: [-115, +225]
+      const x = Math.sign(nx) * (Math.abs(nx) * 116.0 + Math.pow(Math.abs(nx), 2.35) * 94.0);
       const z =
         nz < 0
-          ? -((-nz) * 58.0 + Math.pow(-nz, 2.15) * 44.0)
-          : nz * 68.0 + Math.pow(nz, 2.1) * 138.0;
+          ? -((-nz) * 68.0 + Math.pow(-nz, 2.1) * 48.0)
+          : nz * 78.0 + Math.pow(nz, 2.1) * 148.0;
 
       const y = getTerrainHeight(x, z);
       pos.setXYZ(i, x, y, z);
     }
-
     geo.computeVertexNormals();
 
-    const sandDiffuse = loadTiledTexture('./textures/sand_Diffuse.jpg', true);
-    const sandNormal = loadTiledTexture('./textures/sand_nor_gl.jpg', false);
-    const sandRough = loadTiledTexture('./textures/sand_Rough.jpg', false);
+    this.noiseTexture = makeNoiseTexture(256);
+    this.grainTexture = makeGrainTexture(256);
+    const grassDiff = loadTiledTex('./textures/pbr/sparse_grass_diff.jpg', true, 1, 1);
+    const grassNor = loadTiledTex('./textures/pbr/sparse_grass_nor.jpg', false, 1, 1);
+    const rockDiff = loadTiledTex('./textures/pbr/coral_stone_wall_diff.jpg', true, 1, 1);
 
-    this.material = new CustomShaderMaterial({
-      baseMaterial: THREE.MeshStandardMaterial,
-      roughness: 0.88,
+    this.uniforms = {
+      uNoise: { value: this.noiseTexture },
+      uGrain: { value: this.grainTexture },
+      uGrassDiff: { value: grassDiff },
+      uGrassNor: { value: grassNor },
+      uRockDiff: { value: rockDiff },
+      uFootprintMap: { value: footprints.texture },
+      uFootBoundsMin: { value: new THREE.Vector2(FOOTPRINT_BOUNDS.minX, FOOTPRINT_BOUNDS.minZ) },
+      uFootBoundsSize: { value: new THREE.Vector2(FOOTPRINT_BOUNDS.width, FOOTPRINT_BOUNDS.depth) },
+      uFootTexel: { value: new THREE.Vector2(1 / FOOTPRINT_BOUNDS.resolution, 1 / FOOTPRINT_BOUNDS.resolution) },
+      uTime: { value: 0 },
+      uWaveIntensity: { value: 1.0 },
+      uSunDirection: { value: new THREE.Vector3(0.35, 0.72, 0.58).normalize() },
+      uSunColor: { value: new THREE.Color(0xfff4dd) },
+      uSunPower: { value: 2.45 }
+    };
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.95,
       metalness: 0.0,
-      uniforms: {
-        uSandDiffuse: { value: sandDiffuse },
-        uSandNormal: { value: sandNormal },
-        uSandRough: { value: sandRough },
-        uFootprintMap: { value: footprints.texture },
-        uFootBoundsMin: { value: new THREE.Vector2(FOOTPRINT_BOUNDS.minX, FOOTPRINT_BOUNDS.minZ) },
-        uFootBoundsSize: { value: new THREE.Vector2(FOOTPRINT_BOUNDS.width, FOOTPRINT_BOUNDS.depth) },
-        uFootTexel: { value: new THREE.Vector2(1 / FOOTPRINT_BOUNDS.resolution, 1 / FOOTPRINT_BOUNDS.resolution) },
-        uTime: { value: 0 },
-        uWaveIntensity: { value: 1.0 },
-        uSunDirection: { value: new THREE.Vector3(0.35, 0.72, 0.58).normalize() },
-        uSunColor: { value: new THREE.Color(0xfff4dd) }
-      },
-      vertexShader: /* glsl */ `
-        uniform sampler2D uFootprintMap;
-        uniform vec2 uFootBoundsMin;
-        uniform vec2 uFootBoundsSize;
-
-        varying vec3 vWorldPos;
-        varying vec3 vWorldNormal;
-        varying vec2 vFootUv;
-        varying float vInFootZone;
-
-        void main() {
-          vec4 wp = modelMatrix * vec4(position, 1.0);
-          vec2 fUv = (wp.xz - uFootBoundsMin) / uFootBoundsSize;
-          float inZone = step(0.002, fUv.x) * step(fUv.x, 0.998) *
-                         step(0.002, fUv.y) * step(fUv.y, 0.998);
-
-          vec3 displaced = position;
-          if (inZone > 0.5) {
-            vec4 fp = texture2D(uFootprintMap, fUv);
-            displaced.y += (-fp.r * 0.055 + fp.g * 0.018);
-          }
-
-          csm_Position = displaced;
-          vec4 finalWp = modelMatrix * vec4(displaced, 1.0);
-          vWorldPos = finalWp.xyz;
-          vWorldNormal = normalize(mat3(modelMatrix) * normal);
-          vFootUv = fUv;
-          vInFootZone = inZone;
-        }
-      `,
-      fragmentShader: /* glsl */ `
-        uniform sampler2D uSandDiffuse;
-        uniform sampler2D uSandNormal;
-        uniform sampler2D uSandRough;
-        uniform sampler2D uFootprintMap;
-        uniform vec2 uFootBoundsMin;
-        uniform vec2 uFootBoundsSize;
-        uniform vec2 uFootTexel;
-        uniform float uTime;
-        uniform float uWaveIntensity;
-        uniform vec3 uSunDirection;
-        uniform vec3 uSunColor;
-
-        varying vec3 vWorldPos;
-        varying vec3 vWorldNormal;
-        varying vec2 vFootUv;
-        varying float vInFootZone;
-
-        ${GERSTNER_GLSL}
-        ${CAUSTICS_GLSL}
-
-        float hash21(vec2 p) {
-          p = fract(p * vec2(234.34, 435.345));
-          p += dot(p, p + 34.23);
-          return fract(p.x * p.y);
-        }
-
-        float valueNoise(vec2 p) {
-          vec2 i = floor(p);
-          vec2 f = fract(p);
-          f = f * f * (3.0 - 2.0 * f);
-          float a = hash21(i);
-          float b = hash21(i + vec2(1.0, 0.0));
-          float c = hash21(i + vec2(0.0, 1.0));
-          float d = hash21(i + vec2(1.0, 1.0));
-          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-        }
-
-        float fbm(vec2 p) {
-          float v = 0.0;
-          float a = 0.5;
-          mat2 m = mat2(0.8, 0.6, -0.6, 0.8);
-          for (int i = 0; i < 4; i++) {
-            v += a * valueNoise(p);
-            p = m * p * 2.05;
-            a *= 0.5;
-          }
-          return v;
-        }
-
-        void main() {
-          vec3 wp = vWorldPos;
-          vec3 wNorm = normalize(vWorldNormal);
-
-          float shoal = waveShoalingFactorGLSL(wp.y);
-          float waveH = evalWaveHeightApprox(wp.xz, uTime, uWaveIntensity, shoal);
-
-          // Sample 2048x2048 RTT footprint height + sharp gradient normals
-          float fpDepth = 0.0;
-          float fpRim = 0.0;
-          float fpWetMem = 0.0;
-          vec2 fpGrad = vec2(0.0);
-
-          if (vInFootZone > 0.5) {
-            vec4 fp = texture2D(uFootprintMap, vFootUv);
-            fpDepth = fp.r;
-            fpRim = fp.g;
-            fpWetMem = fp.b;
-
-            vec2 dx = vec2(uFootTexel.x * 1.5, 0.0);
-            vec2 dy = vec2(0.0, uFootTexel.y * 1.5);
-            vec4 sL = texture2D(uFootprintMap, vFootUv - dx);
-            vec4 sR = texture2D(uFootprintMap, vFootUv + dx);
-            vec4 sD = texture2D(uFootprintMap, vFootUv - dy);
-            vec4 sU = texture2D(uFootprintMap, vFootUv + dy);
-
-            float hL = -sL.r + sL.g * 0.38;
-            float hR = -sR.r + sR.g * 0.38;
-            float hD = -sD.r + sD.g * 0.38;
-            float hU = -sU.r + sU.g * 0.38;
-            fpGrad = vec2(hR - hL, hU - hD);
-          }
-
-          // Dual-scale rotated Poly Haven CC0 sand PBR sampling (zero visible repetition!)
-          float macroNoise = fbm(wp.xz * 0.065);
-          vec2 uvA = wp.xz * 0.32;
-          mat2 rot = mat2(0.80, -0.60, 0.60, 0.80);
-          vec2 uvB = (rot * wp.xz) * 0.13 + vec2(3.7, 1.9);
-
-          vec3 texColA = texture2D(uSandDiffuse, uvA).rgb;
-          vec3 texColB = texture2D(uSandDiffuse, uvB).rgb;
-          vec3 photoSand = mix(texColA, texColB, 0.44 + 0.18 * macroNoise);
-
-          vec3 nMapA = texture2D(uSandNormal, uvA).xyz * 2.0 - 1.0;
-          vec3 nMapB = texture2D(uSandNormal, uvB).xyz * 2.0 - 1.0;
-          vec2 sandDetailN = mix(nMapA.xy, nMapB.xy, 0.42);
-
-          float photoRough = mix(texture2D(uSandRough, uvA).r, texture2D(uSandRough, uvB).r, 0.45);
-
-          // Warm golden-ivory coastal sand grading with real photo grain
-          vec3 warmGolden = vec3(0.76, 0.61, 0.39);
-          vec3 drySand = mix(photoSand, photoSand * warmGolden * 1.45, 0.52);
-          drySand *= (0.88 + 0.22 * macroNoise);
-
-          float seabedMask = smoothstep(0.15, -0.75, wp.y);
-          float duneMask = smoothstep(1.6, 4.2, wp.y);
-
-          // Dynamic wet-to-dry shoreline swash transition
-          float swashHeight = waveH + 0.36 + 0.16 * macroNoise;
-          float heightWet = smoothstep(swashHeight + 0.68, swashHeight - 0.14, wp.y);
-          float wetness = clamp(max(heightWet, fpWetMem * 0.92), 0.0, 1.0);
-          wetness *= smoothstep(1.65, 0.45, wp.y);
-
-          vec3 wetSand = drySand * vec3(0.42, 0.38, 0.33);
-          vec3 seabedSand = mix(drySand * vec3(0.82, 0.84, 0.72), vec3(0.18, 0.27, 0.24), smoothstep(-1.5, -11.0, wp.y));
-
-          vec3 sandCol = mix(drySand, wetSand, wetness);
-          sandCol = mix(sandCol, seabedSand, seabedMask * 0.72);
-
-          // Coastal headland sandstone on steep flanks
-          float slope = 1.0 - clamp(wNorm.y, 0.0, 1.0);
-          float cliffMask = smoothstep(0.24, 0.52, slope) * smoothstep(0.9, 3.4, wp.y);
-          vec3 rockCol = mix(vec3(0.22, 0.19, 0.15), vec3(0.34, 0.30, 0.24), macroNoise);
-          sandCol = mix(sandCol, rockCol, cliffMask);
-
-          // Footprint ambient occlusion & compacted damp sole shading
-          float fpAO = 1.0 - fpDepth * 0.58;
-          vec3 fpShade = mix(sandCol, sandCol * vec3(0.62, 0.56, 0.48), fpDepth * (1.0 - wetness * 0.4));
-          sandCol = fpShade * fpAO + vec3(0.035, 0.028, 0.016) * fpRim * (1.0 - wetness);
-
-          // Combine terrain normal + real Poly Haven sand normal map + seabed ripples + crisp RTT footprint gradients
-          float ripplePhase = wp.z * 3.4 + sin(wp.x * 0.75 + macroNoise * 3.0) * 1.3;
-          float rGradZ = cos(ripplePhase) * (seabedMask * 0.20 + duneMask * 0.08) * (1.0 - wetness * 0.7);
-          float detailAmt = mix(0.34, 0.14, wetness);
-
-          vec3 pertWorldNorm = normalize(
-            wNorm +
-            vec3(
-              -fpGrad.x * 3.6 + sandDetailN.x * detailAmt,
-              0.0,
-              -fpGrad.y * 3.6 + sandDetailN.y * detailAmt + rGradZ
-            )
-          );
-
-          csm_FragNormal = normalize((viewMatrix * vec4(pertWorldNorm, 0.0)).xyz);
-
-          // Physically based roughness from real photo map transitioning smoothly to glossy wet shore
-          float dryRough = clamp(0.76 + photoRough * 0.20, 0.74, 0.96);
-          float baseRough = mix(dryRough, 0.095, smoothstep(0.16, 0.85, wetness));
-          baseRough = mix(baseRough, 0.065, fpDepth * wetness * 0.8);
-          baseRough = mix(baseRough, 0.86, cliffMask);
-          csm_Roughness = clamp(baseRough, 0.06, 0.96);
-
-          // Fine crystalline quartz sand sun-sparkle micro-glints
-          vec3 viewDir = normalize(cameraPosition - wp);
-          vec3 halfVec = normalize(uSunDirection + viewDir);
-          vec2 cell = floor(wp.xz * 210.0);
-          vec2 cellRnd = vec2(hash21(cell), hash21(cell + 17.3));
-          vec3 facetNorm = normalize(pertWorldNorm + vec3((cellRnd.x - 0.5) * 0.65, 0.0, (cellRnd.y - 0.5) * 0.65));
-          float glintSpec = pow(max(dot(facetNorm, halfVec), 0.0), 310.0);
-          float glintMask = (1.0 - wetness) * (1.0 - cliffMask) * (1.0 - seabedMask) * smoothstep(18.0, 1.5, length(cameraPosition - wp));
-          vec3 sparkle = uSunColor * glintSpec * glintMask * 0.90;
-
-          // Subtle wet-sand Fresnel sky sheen
-          float ndv = max(dot(pertWorldNorm, viewDir), 0.0);
-          float wetSheen = pow(1.0 - ndv, 4.0) * wetness * 0.16 * smoothstep(-0.05, 0.25, wp.y);
-
-          // Dual-layer animated underwater caustics on submerged seabed
-          vec3 caustics = computeUnderwaterCaustics(wp, pertWorldNorm, uSunDirection, waveH, uTime);
-          vec3 causticLight = caustics * uSunColor * 1.18;
-
-          csm_DiffuseColor = vec4(sandCol + vec3(wetSheen), 1.0);
-          csm_Emissive = sparkle + causticLight;
-        }
-      `
+      envMapIntensity: 0.85
     });
+
+    mat.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, this.uniforms);
+
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          /* glsl */ `
+          #include <common>
+          uniform sampler2D uFootprintMap;
+          uniform vec2 uFootBoundsMin;
+          uniform vec2 uFootBoundsSize;
+          varying vec3 vWPos;
+          varying vec3 vWNorm;
+          varying vec2 vFootUv;
+          varying float vInFootZone;
+          `
+        )
+        .replace(
+          '#include <begin_vertex>',
+          /* glsl */ `
+          #include <begin_vertex>
+          {
+            vec4 wpInit = modelMatrix * vec4(transformed, 1.0);
+            vec2 fUv = (wpInit.xz - uFootBoundsMin) / uFootBoundsSize;
+            float inZone = step(0.002, fUv.x) * step(fUv.x, 0.998) *
+                           step(0.002, fUv.y) * step(fUv.y, 0.998);
+            if (inZone > 0.5) {
+              vec4 fp = texture2D(uFootprintMap, fUv);
+              transformed.y += (-fp.r * 0.048 + fp.g * 0.015);
+            }
+            vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+            vWNorm = normalize(mat3(modelMatrix) * objectNormal);
+            vFootUv = fUv;
+            vInFootZone = inZone;
+          }
+          `
+        );
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          /* glsl */ `
+          #include <common>
+          uniform sampler2D uNoise;
+          uniform sampler2D uGrain;
+          uniform sampler2D uGrassDiff;
+          uniform sampler2D uGrassNor;
+          uniform sampler2D uRockDiff;
+          uniform sampler2D uFootprintMap;
+          uniform vec2 uFootTexel;
+          uniform float uTime;
+          uniform float uWaveIntensity;
+          uniform vec3 uSunDirection;
+          uniform vec3 uSunColor;
+          uniform float uSunPower;
+
+          varying vec3 vWPos;
+          varying vec3 vWNorm;
+          varying vec2 vFootUv;
+          varying float vInFootZone;
+
+          ${GERSTNER_GLSL}
+          ${CAUSTICS_GLSL}
+
+          vec3 gNw;
+          float gWet;
+          float gSheen;
+          float gSandMask;
+          float gGrassMask;
+          float gCamD;
+          float gWaveH;
+          float gFpDepth;
+          vec2 gFpGrad;
+          vec4 gGr;
+          vec4 gGr2;
+          vec4 gNz;
+          `
+        )
+        .replace(
+          '#include <map_fragment>',
+          /* glsl */ `
+          #include <map_fragment>
+          {
+            vec3 wp = vWPos;
+            vec3 wNorm = normalize(vWNorm);
+            gCamD = length(cameraPosition - wp);
+
+            vec4 nz = texture2D(uNoise, wp.xz * 0.021);
+            vec4 nz2 = texture2D(uNoise, wp.xz * 0.17);
+            gGr = texture2D(uGrain, wp.xz * 2.3);
+            gGr2 = texture2D(uGrain, wp.xz * 0.37);
+            gNz = nz;
+
+            // Sunlit pale silica sand with grain relief & tiny shell/mineral flecks
+            vec3 sand = mix(vec3(0.60, 0.48, 0.31), vec3(0.81, 0.69, 0.49), nz.r * 0.55 + nz2.g * 0.45);
+            sand *= 0.88 + 0.24 * gGr.b;
+            sand *= 1.0 - 0.20 * smoothstep(0.82, 0.96, gGr.a) * smoothstep(34.0, 4.0, gCamD);
+
+            // Live + receding swash water film for damp shoreline band & glassy mirror sheen
+            float shoal = waveShoalingFactorGLSL(wp.y);
+            float w0 = evalWaveHeightApprox(wp.xz, uTime, uWaveIntensity, shoal);
+            float w1 = evalWaveHeightApprox(wp.xz, uTime - 0.75, uWaveIntensity, shoal);
+            float w2 = evalWaveHeightApprox(wp.xz, uTime - 1.55, uWaveIntensity, shoal);
+            gWaveH = w0;
+            float waterRecent = max(w0, max(w1, w2));
+
+            float highWater = (0.04 + 0.055 * uWaveIntensity) * 0.85;
+            float edgeN = (nz2.r - 0.5) * 0.08;
+            gWet = 1.0 - smoothstep(highWater + 0.12, highWater + 0.62, wp.y + edgeN);
+            gSheen = 1.0 - smoothstep(0.0, 0.10, wp.y - waterRecent + edgeN * 0.35);
+            gSheen = max(gSheen, 0.28 * gWet) * smoothstep(-0.18, 0.02, wp.y);
+
+            // RTT 2048x2048 footprints + gradient
+            gFpDepth = 0.0;
+            float fpRim = 0.0;
+            float fpWetMem = 0.0;
+            gFpGrad = vec2(0.0);
+            if (vInFootZone > 0.5 && gCamD < 80.0) {
+              vec4 fp = texture2D(uFootprintMap, vFootUv);
+              gFpDepth = fp.r;
+              fpRim = fp.g;
+              fpWetMem = fp.b;
+
+              vec2 dx = vec2(uFootTexel.x * 1.5, 0.0);
+              vec2 dy = vec2(0.0, uFootTexel.y * 1.5);
+              vec4 sL = texture2D(uFootprintMap, vFootUv - dx);
+              vec4 sR = texture2D(uFootprintMap, vFootUv + dx);
+              vec4 sD = texture2D(uFootprintMap, vFootUv - dy);
+              vec4 sU = texture2D(uFootprintMap, vFootUv + dy);
+              float hL = -sL.r + sL.g * 0.35;
+              float hR = -sR.r + sR.g * 0.35;
+              float hD = -sD.r + sD.g * 0.35;
+              float hU = -sU.r + sU.g * 0.35;
+              gFpGrad = vec2(hR - hL, hU - hD);
+            }
+            float combWet = clamp(max(gWet, fpWetMem * 0.90) * smoothstep(1.55, 0.35, wp.y), 0.0, 1.0);
+            gWet = combWet;
+
+            sand = mix(sand, sand * vec3(0.50, 0.47, 0.44), combWet);
+            sand *= 1.0 - 0.42 * clamp(gFpDepth, 0.0, 1.0);
+            sand *= 1.0 + 0.10 * clamp(fpRim, 0.0, 1.0);
+            // Deeper seabed seagrass/algae mottling
+            sand = mix(sand, sand * vec3(0.52, 0.70, 0.48), smoothstep(0.48, 0.74, nz.a) * smoothstep(-1.4, -5.0, wp.y) * 0.82);
+
+            // Lush photorealistic Poly Haven coastal dune grass (dual-scale anti-tiling world UVs!)
+            vec2 gUv1 = wp.xz * 0.22;
+            vec2 gUv2 = vec2(wp.x * 0.068 - wp.z * 0.048, wp.x * 0.048 + wp.z * 0.068);
+            vec3 grassTex = mix(texture2D(uGrassDiff, gUv1).rgb, texture2D(uGrassDiff, gUv2).rgb, 0.45);
+            vec3 grassTint = mix(vec3(0.56, 1.18, 0.44), vec3(0.92, 1.32, 0.58), nz.g * 0.55 + nz2.r * 0.45);
+            vec3 grassCol = grassTex * grassTint * (0.90 + 0.22 * gGr2.b);
+            float hillLush = smoothstep(-34.0, -54.0, wp.z) * 0.26;
+            float headTopGreen = smoothstep(46.0, 66.0, abs(wp.x)) * smoothstep(2.4, 5.2, wp.y) * 0.65;
+            float gm = max(
+              smoothstep(-26.5, -34.0, wp.z) * smoothstep(1.65, 3.8, wp.y) * smoothstep(0.16, 0.46, nz2.g + 0.28 * nz.r + hillLush),
+              headTopGreen * smoothstep(0.22, 0.54, nz2.g + 0.22 * nz.r)
+            );
+            gGrassMask = gm;
+
+            // Stratified weathered coastal limestone & headland bedrock with real stone detail
+            float strata = sin(wp.y * 2.4 + nz.r * 4.5) * 0.5 + 0.5;
+            vec3 rockTex = texture2D(uRockDiff, wp.xz * 0.16 + vec2(0.0, wp.y * 0.24)).rgb;
+            vec3 rockCol = rockTex * mix(vec3(0.58, 0.55, 0.48), vec3(0.95, 0.88, 0.76), nz2.r * 0.50 + strata * 0.30 + nz.g * 0.20);
+            rockCol = mix(rockCol, rockCol * 0.50, 1.0 - smoothstep(0.1, 0.9, wp.y));
+            float slope = 1.0 - clamp(wNorm.y, 0.0, 1.0);
+            float cliffMask = max(smoothstep(48.0, 66.0, abs(wp.x)) * smoothstep(0.3, 2.2, wp.y), smoothstep(0.20, 0.44, slope) * smoothstep(1.0, 3.0, wp.y));
+            float rm = cliffMask * smoothstep(0.20, 0.50, 0.48 + (nz2.r - 0.5) * 0.32) * (1.0 - gm * 0.55);
+
+            gSandMask = (1.0 - gm) * (1.0 - rm);
+            vec3 col = mix(sand, grassCol, gm);
+            col = mix(col, rockCol, rm);
+            diffuseColor.rgb = col;
+          }
+          `
+        )
+        .replace(
+          '#include <roughnessmap_fragment>',
+          /* glsl */ `
+          #include <roughnessmap_fragment>
+          {
+            float r = mix(0.95, 0.42, gWet);
+            r = mix(r, 0.08, gSheen * gSandMask);
+            r = mix(r, 0.94, smoothstep(-0.02, -0.22, vWPos.y));
+            r = mix(r, 0.88, clamp(gFpDepth * 1.5, 0.0, 1.0));
+            roughnessFactor = mix(0.90, r, gSandMask);
+          }
+          `
+        )
+        .replace(
+          '#include <normal_fragment_maps>',
+          /* glsl */ `
+          #include <normal_fragment_maps>
+          {
+            vec3 nW = inverseTransformDirection(normal, viewMatrix);
+            float nearF = smoothstep(45.0, 3.0, gCamD);
+            vec2 gn = (gGr.xy - 0.5) * 1.05 * nearF + (gGr2.xy - 0.5) * 0.48;
+            float dry = (1.0 - gWet) * gSandMask * smoothstep(0.0, 0.25, vWPos.y);
+
+            // Wind ripples on dry dunes & tide ripples on sandy seabed
+            float rp = vWPos.x * 0.5 + vWPos.z * 9.0 + gNz.r * 16.0;
+            float ripple = cos(rp) * 0.082 * dry * smoothstep(60.0, 10.0, gCamD) * smoothstep(0.35, 0.60, gNz.g + 0.1);
+            float rs = vWPos.z * 15.0 + vWPos.x * 1.3 + gNz.g * 22.0;
+            ripple += cos(rs) * 0.22 * smoothstep(-0.22, -1.10, vWPos.y) * gSandMask * smoothstep(55.0, 8.0, gCamD);
+
+            nW.xz += gn * (1.0 - 0.75 * gSheen) * mix(1.4, 1.0, gSandMask);
+            if (gGrassMask > 0.02) {
+              vec3 grassN = texture2D(uGrassNor, vWPos.xz * 0.22).xyz * 2.0 - 1.0;
+              nW.xz += grassN.xy * 0.55 * gGrassMask * smoothstep(95.0, 14.0, gCamD);
+            }
+            nW.z += ripple;
+            nW.xz -= gFpGrad * 1.85;
+            nW = normalize(nW);
+            gNw = nW;
+            normal = normalize((viewMatrix * vec4(nW, 0.0)).xyz);
+          }
+          `
+        )
+        .replace(
+          '#include <lights_fragment_end>',
+          /* glsl */ `
+          #include <lights_fragment_end>
+          {
+            // Shadow-masked dual-scale quartz micro-glints on dry/damp sunlit silica grains
+            vec3 Vw = normalize(cameraPosition - vWPos);
+            vec3 Hw = normalize(normalize(uSunDirection) + Vw);
+            float sp = 0.0;
+            for (int i = 0; i < 2; i++) {
+              float S = i == 0 ? 260.0 : 95.0;
+              vec2 cell = floor(vWPos.xz * S);
+              vec4 r = texture2D(uGrain, (cell + 0.5) / 256.0);
+              vec4 r2 = texture2D(uGrain, (cell.yx + 37.5) / 256.0);
+              vec3 fn = normalize(gNw + vec3(r.a - 0.5, 0.0, r2.a - 0.5) * 1.45);
+              sp += pow(max(dot(fn, Hw), 0.0), 700.0) * step(0.78, r2.b + r.a * 0.3);
+            }
+            float expect = dot(diffuseColor.rgb * uSunColor, vec3(0.333)) * uSunPower * 0.318 * max(dot(gNw, normalize(uSunDirection)), 0.08);
+            float lit = clamp(dot(reflectedLight.directDiffuse, vec3(0.333)) / max(expect, 1e-3), 0.0, 1.0);
+            float above = smoothstep(-0.05, 0.03, vWPos.y);
+            reflectedLight.directSpecular += uSunColor * uSunPower * sp * 3.4 * lit * gSandMask * above * (1.0 - 0.55 * gWet) * exp(-gCamD / 22.0);
+
+            // Optical wave-interference seabed caustics
+            if (vWPos.y < gWaveH) {
+              vec3 caustics = computeUnderwaterCaustics(vWPos, gNw, uSunDirection, gWaveH, uTime);
+              reflectedLight.directDiffuse += diffuseColor.rgb * 0.318 * caustics * uSunColor * max(uSunPower, 0.8) * 1.45;
+            }
+          }
+          `
+        );
+    };
+    mat.customProgramCacheKey = () => 'neon-cove-silica-sand-v2';
+    this.material = mat;
 
     this.mesh = new THREE.Mesh(geo, this.material);
     this.mesh.receiveShadow = true;
@@ -288,13 +353,14 @@ export class CoastalTerrain {
     elapsedTime: number,
     waveIntensity: number,
     sunDirection: THREE.Vector3,
-    sunColor: THREE.Color
+    sunColor: THREE.Color,
+    sunPower = 2.45
   ): void {
-    const u = this.material.uniforms;
-    u.uFootprintMap.value = footprintTexture;
-    u.uTime.value = elapsedTime;
-    u.uWaveIntensity.value = waveIntensity;
-    u.uSunDirection.value.copy(sunDirection);
-    u.uSunColor.value.copy(sunColor);
+    this.uniforms.uFootprintMap.value = footprintTexture;
+    this.uniforms.uTime.value = elapsedTime;
+    this.uniforms.uWaveIntensity.value = waveIntensity;
+    this.uniforms.uSunDirection.value.copy(sunDirection);
+    this.uniforms.uSunColor.value.copy(sunColor);
+    this.uniforms.uSunPower.value = sunPower;
   }
 }

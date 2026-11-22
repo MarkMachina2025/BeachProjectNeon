@@ -28,9 +28,12 @@ export class UnderwaterParticles {
 
   // 3D Rising Bubbles (InstancedMesh of iridescent translucent spheres)
   private readonly bubbleMesh: THREE.InstancedMesh;
+  private readonly bubbleMat: THREE.ShaderMaterial;
   private readonly bubbles: BubbleState[] = [];
   private readonly maxBubbles = 260;
   private bubbleCursor = 0;
+  private ventTimer = 0;
+  private readonly ventTmp = new THREE.Vector3();
   private readonly dummy = new THREE.Object3D();
 
   constructor() {
@@ -122,21 +125,55 @@ export class UnderwaterParticles {
     this.motePoints.frustumCulled = false;
     this.group.add(this.motePoints);
 
-    // 2. 3D Rising Bubbles
+    // 2. 3D Rising Bubbles (Fresnel cyan rim + solar specular ShaderMaterial, zero physical pass cost)
     const bubbleGeo = new THREE.SphereGeometry(1, 10, 8);
-    const bubbleMat = new THREE.MeshPhysicalMaterial({
-      color: 0xdffbff,
-      roughness: 0.06,
-      metalness: 0.05,
-      transmission: 0.72,
+    this.bubbleMat = new THREE.ShaderMaterial({
       transparent: true,
-      opacity: 0.68,
-      ior: 1.33,
-      depthWrite: false
+      depthWrite: false,
+      uniforms: {
+        uSunDirection: { value: new THREE.Vector3(0.35, 0.72, 0.58).normalize() },
+        uSunColor: { value: new THREE.Color(0xfff4dd) }
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vNormalW;
+        varying vec3 vViewDir;
+        void main() {
+          vec4 local = vec4(position, 1.0);
+          vec3 nLocal = normal;
+          #ifdef USE_INSTANCING
+            local = instanceMatrix * local;
+            nLocal = mat3(instanceMatrix) * nLocal;
+          #endif
+          vec4 wp = modelMatrix * local;
+          vNormalW = normalize(mat3(modelMatrix) * nLocal);
+          vViewDir = normalize(cameraPosition - wp.xyz);
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 uSunDirection;
+        uniform vec3 uSunColor;
+        varying vec3 vNormalW;
+        varying vec3 vViewDir;
+        void main() {
+          vec3 N = normalize(vNormalW);
+          vec3 V = normalize(vViewDir);
+          vec3 L = normalize(uSunDirection);
+          float fres = pow(1.0 - max(dot(N, V), 0.0), 2.4);
+          vec3 H = normalize(L + V);
+          float spec = pow(max(dot(N, H), 0.0), 72.0) * 1.45;
+          float bottomBounce = clamp(-N.y * 0.5 + 0.5, 0.0, 1.0) * 0.35;
+          vec3 col = mix(vec3(0.18, 0.72, 0.85), vec3(0.75, 0.98, 1.0), fres) * (0.55 + bottomBounce)
+                   + uSunColor * spec;
+          float alpha = clamp(0.18 + fres * 0.62 + spec * 0.45, 0.0, 0.92);
+          gl_FragColor = vec4(col, alpha);
+        }
+      `
     });
 
-    this.bubbleMesh = new THREE.InstancedMesh(bubbleGeo, bubbleMat, this.maxBubbles);
+    this.bubbleMesh = new THREE.InstancedMesh(bubbleGeo, this.bubbleMat, this.maxBubbles);
     this.bubbleMesh.frustumCulled = false;
+    this.bubbleMesh.visible = false;
     this.bubbleMesh.renderOrder = 3;
 
     for (let i = 0; i < this.maxBubbles; i++) {
@@ -210,9 +247,36 @@ export class UnderwaterParticles {
     this.moteMaterial.uniforms.uSunDirection.value.copy(sunDirection);
     this.moteMaterial.uniforms.uSunColor.value.copy(sunColor);
     this.moteMaterial.uniforms.uWaterHeight.value = camWaveH;
+    this.bubbleMat.uniforms.uSunDirection.value.copy(sunDirection);
+    this.bubbleMat.uniforms.uSunColor.value.copy(sunColor);
+
+    // Subtle natural seabed vent bubble columns near reef / anchor when camera is near ocean
+    if (cameraPos.z > 8 && cameraPos.y < 4.5) {
+      this.ventTimer += dt;
+      if (this.ventTimer >= 0.42) {
+        this.ventTimer = 0;
+        const vents: [number, number][] = [
+          [-14, 34],
+          [6, 38],
+          [16, 26]
+        ];
+        for (const [vx, vz] of vents) {
+          const dx = cameraPos.x - vx;
+          const dz = cameraPos.z - vz;
+          if (dx * dx + dz * dz < 900) {
+            const groundY = getTerrainHeight(vx, vz);
+            if (groundY < -0.8) {
+              this.ventTmp.set(vx, groundY + 0.25, vz);
+              this.emitBubbles(this.ventTmp, 2, 0.35, 0.58);
+            }
+          }
+        }
+      }
+    }
 
     // Update rising 3D bubbles
     let anyDirty = false;
+    let anyActive = false;
     for (let i = 0; i < this.maxBubbles; i++) {
       const b = this.bubbles[i];
       if (!b.active) continue;
@@ -241,6 +305,7 @@ export class UnderwaterParticles {
         continue;
       }
 
+      anyActive = true;
       const lifeT = b.age / b.maxAge;
       const pulse = 1.0 + 0.14 * Math.sin(elapsedTime * 9.0 + b.wobblePhase);
       const scale = b.size * (0.65 + 0.55 * Math.min(lifeT * 3.0, 1.0)) * pulse;
@@ -253,5 +318,6 @@ export class UnderwaterParticles {
     if (anyDirty) {
       this.bubbleMesh.instanceMatrix.needsUpdate = true;
     }
+    this.bubbleMesh.visible = anyActive;
   }
 }

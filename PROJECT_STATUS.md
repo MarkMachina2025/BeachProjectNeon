@@ -3,102 +3,148 @@
 ## 1. Agent state
 
 ### Metadata
-- Project: **Neon Cove (BeachProjectNeon)**, root `D:\AI\BeachProjectNeon`, an interactive WebGL2 3D coastal beach and GTA-style underwater exploration tech demo built with Three.js, TypeScript, and Vite.
-- Last updated: 2026-11-21T01:00:00+01:00 (CET).
-- Last meaningful work: Completed major visual/audio/world-scale overhaul (+50% larger beach, Poly Haven CC0 PBR sand/rock/wood textures, official Three.js multi-octave water normal maps + true screen-space refraction, realistic ~27cm 2048×2048 RTT footprints, dynamic water-entry ripple rings & 3D splash droplets, hair clipping fix, 10 NPCs including shallow-water swimmers with beach ball & swim ring, real recorded Mixkit MP3 audio, FXAA 3.11 + SSAA anti-aliasing), verified with `tsc && vite build` and headless Chrome WebGL2 playtest (`0` errors), and redeployed to GitHub Pages.
+- Project: **Neon Cove (BeachProjectNeon)**, root `D:\AI\BeachProjectNeon`, an interactive WebGL2 3D coastal resort beach and underwater exploration demo built with Three.js, TypeScript, and Vite.
+- Last updated: 2026-11-22T05:30:00+01:00 (CET).
+- Last meaningful work: Completed a **Full-World Forensic Bug-Hunt & Polish Pass (16 Confirmed Bugs Eliminated)** backed by a brand-new 12-point close-up verification script (`scripts/qa_bug_hunt.mjs`) — verified cleanly with exit `0` across ALL 5 gates (`npm run build`, `qa_bug_hunt.mjs` 12/12 PASS, `qa_verify_deep.mjs` 12/12 PASS, `qa_audio_balance.mjs` 9/9 PASS, and `qa_inspect_world.mjs` 30/30 PASS, `task-3606`), leaving `D:\AI\BeachProjectNeon\fable5.2 beach project\` 100% untouched:
+  - **Bench Orientation, Seating Kinematics & Interaction Priority Fixes (`CoastalModels.ts`, `HumanRig.ts`, `PlayerController.ts`, `main.ts`):**
+    - Flipped all 4 backwards `painted_wooden_bench` models (`yaw: Math.PI -> 0`) so both Boardwalk benches and both East Overlook benches face South (`+Z`, ocean) and seated players cleanly on the wooden slats.
+    - Fixed 9cm sunken feet across all `sit_chair` poses (`hipY: 0.46 -> 0.54`, exact thigh/shin bend so foot soles rest flat on wood planks), fixed Tiki Bar patrons clipping through barstools (`sit_bar` `hipY: 0.57 -> 0.720`, flush on stool tops), raised lounge-chair sunbathers onto cushions with forearms resting on armrests (`lounge` `hipY: 0.465 -> 0.515`), and relaxed `float_tube` arms over the inflatable swim ring.
+    - Aligned Picnic Table sit spots to exact bench centerline (`z ± 0.84`), moved Café Table sit spots onto the actual unoccupied East Café chairs (`toW(-0.11, 0.56)` / `toW(0.07, -0.51)`), centered Pier Bench seats (`x: 23.30, y: 2.15`), added `exitBack: true` so standing up from Picnic & Café tables steps cleanly AWAY from the table, cleared stale `interactJustPressed` inside `teleportTo()`, and tightened Brass Telescope radius (`2.2m -> 1.45m`) so it never steals `[E]` from the East Overlook benches.
+  - **Silky Clean Water Physics & Wake Trail Overhaul (`WaterRippleSim.ts`, `OceanSystem.ts`, `main.ts`):**
+    - Eliminated the artificial electric-blue semi-circle halo around wading/swimming players (removed `bodyBend * 2.2` from `vCrest`, softened meniscus normal tilt `1.45 -> 0.30`, tightened body radii `0.22m` wading / `0.30m` swimming / `0.48m` kayaking).
+    - Eliminated the opaque milky shaving-foam trail smear (removed the `0.42` solid foam floor, switched to translucent lacy filigree `wakeFiligree`, softened foam persistence `0.974` & wide 2-texel ripple normal gradients `0.48` + `0.045` viscosity smoothing to kill Nyquist grid ringing).
+  - **Prop, Boat, Kayak & Deck Visual Bug Fixes (`PlayerController.ts`, `CoastalLandmarks.ts`, `CoastalModels.ts`, `InteractiveWorld.ts`, `index.html`):**
+    - Removed Z-fighting white deck stripe on the player kayak and upgraded the flat plank paddle to a sleek 3-part carbon-shaft double-blade paddle.
+    - Added dark timber sub-deck backing beneath the boardwalk promenade so bright white sand never peeks through plank seams, widened the moored rowboat floorboards to seal bow/stern ocean gaps, grounded both East Kayak Cove shore kayaks to local sand height, repositioned the Bonfire ukulele cleanly against the front driftwood bark, downscaled oversized bar bananas (`0.24 -> 0.13`), lowered Golden Shell hover height (`+0.58 -> +0.42`), removed dead `rain` fog branch, and standardized initial Wave Intensity label to `1.00×`.
+  - **NPC Close-Up Face, Body-Bug, Hand & Sunglasses Overhaul (`HumanRig.ts` — 1 Draw Call per NPC):**
+    - Replaced the floating cyan rashguard chest box with a flush contoured `createAnatomicalLoft(..., 'chest')` stripe, eliminated the shorts/hip skin slit by extending pelvis/short-leg overlap, and replaced blocky cube hands with sculpted tapered palms/fingers + thumbs.
+    - Re-sculpted NPC faces with tapered necks, contoured jawlines/cheekbones/orbital recesses, natural capsule nose bridge + rounded tip (removed pointy cone), sculpted upper/lower lips, expressive sclera/colored iris/pupil/wet catchlight/eyelid folds/lashes/brows, and curved wayfarer sunglasses — tuned with lean micro-segment counts to stay safely under triangle budgets.
+  - **Surfacing Audio Fix (`public/audio/surface_emerge.mp3`) & Audio Balance (`SoundEngine.ts`):**
+    - Replaced the accidental spoken `"spla"` clip in `surface_emerge.mp3` with a genuine `0.85s` filtered water burst transcoded from `surf_splash.mp3` (zero voice, zero oscillators).
+    - Rebalanced `beachball` SFX headroom & `oceanBirds` presence so all 9 spatial audio balance gates pass cleanly.
+  - **Subtle Body-Water Meniscus & Shimmering Kelvin V-Wake Trail (`WaterRippleSim.ts`, `OceanSystem.ts`):**
+    - Extended wave/foam persistence (`0.986` / `0.9885`) with twin trailing Kelvin V-wake arms while softening immediate body contact foam (`0.48×`) and ripple displacement (`0.13`) on a `96×96` shore-concentrated ocean mesh so swimmers, waders, and kayaks carve delicate meniscus collars plus long shimmering wakes.
+  - **Interactive Horizontal Swim Ring, Aligned Seating & 0.00m Dynamic Shower (`BeachProps.ts`, `PlayerController.ts`, `CoastalLandmarks.ts`, `NpcManager.ts`, `main.ts`):**
+    - Baked `floatRingGeo.rotateX(Math.PI / 2)` into geometry so the pink/white inflatable swim ring floats flat horizontally on waves, responds to bumps/drift, and supports **`[E]` Float on Swim Ring** from both wading and swimming depths (`WASD` paddle/drift, `E`/`Space` exit).
+    - Aligned Boardwalk and Overlook bench sit targets to eliminate backrest clipping, added **`[E]` Sitting** on Picnic Tables (both benches), Café Patio chairs, and Ocean Pier benches with forward-facing stand-up exit.
+    - Snapped `beach_shower` slot directly beneath the showerhead (`-18.2, -22.54`, verified `err=0.00m`) and dynamically toggled `showerInstMesh.visible` on/off when occupied by an NPC or the player.
+  - **Zero-Stuck Corridor-Aware NPC Pathing, Expanded Outer-Bay Kayaks & Weather Slider Sync (`NpcManager.ts`, `CoastalLandmarks.ts`, `HudController.ts`, `index.html`, `main.ts`):**
+    - Added Cross-Pier Boardwalk Corridor Routing (`z=-25.1`), split elevated pier colliders (`z > -14`) so beachgoers walk cleanly underneath along the shoreline, shifted West Cabana slots east of West Palm Hammocks, and added proactive landmark corner repulsion — verified **`stuck=0`** across all 21 traveling citizens in a live 8-second audit!
+    - Expanded autonomous touring kayaks from `2 -> 4` spanning West Headland Cove, Central Outer Channel (`z=38..52`), and East Lighthouse Cove (`89` total NPCs, `20` offshore maritime actors beyond the first few meters of shoreline!).
+    - Removed the non-functional `Rain` preset from the HUD (`Clear`, `Breeze`, `Mist`) and wired `hud.syncWaveIntensity(waveIntensity)` so switching weather presets immediately syncs the Wave Intensity slider & label (`1.00×`, `1.45×`, `0.75×`).
+  - **New Deep Forensic Verification Suite (`scripts/qa_verify_deep.mjs`):**
+    - Automated zero-dependency CDP test verifying weather/slider sync, Rain removal, NPC face close-ups, 0.00m shower alignment, Boardwalk Bench & Picnic Table `[E]` sitting, horizontal `[E]` Swim Ring, live swimming Kelvin wake trail, 8-second live zero-stuck NPC pathing audit, outer-bay kayaks & offshore activity count, and `0` console/page errors.
+  - **Real-Time GPGPU 2D Shallow-Water Wave-Equation Simulation & Body-Water Bending (`WaterRippleSim.ts`, `OceanSystem.ts`, `main.ts`):**
+    - Built a `256×256` half-float ping-pong FBO wave-equation solver (`WaterRippleSim.ts`) covering a `40m×40m` world-locked local window (texel-snapped UV reprojection — zero smearing!) injecting up to `12` simultaneous water-colliding bodies (Player + 11 closest water NPCs, kayaks, surfers, floaters, snorkelers, wading citizens).
+    - Upgraded `OceanSystem.ts` to a shore-concentrated `112×112` mesh with live **physical vertex displacement** (`tRippleMap.r` + analytical capillary **meniscus collar & directional bow-wave / stern-trough deformation** around the player & 4 nearest bodies), central-difference **ripple normal bending** in the fragment shader, frothy **body-contact meniscus foam rings**, and trailing **Kelvin V-wake foam**.
+  - **Utility-Based Autonomous Activity-Cycling Citizen AI & Zero Stuck NPCs (`NpcManager.ts`):**
+    - Built a **38-slot Shared Activity Pool** spanning 12 coastal activities (`beach_shower`, `ocean_swim`, `tiki_bar`, `coffee_cart`, `bonfire`, `pier_lookout`, `monument`, `cabana`, `sand_stretch`, `shell_hunt`, `tiki_dance`, `boardwalk_stroll`) with real slot reservation (`occupantId`).
+    - Upgraded free-roaming & hardcoded single-task beachgoers (including the old forever-showering guy!) into **26+ Needs-Driven Autonomous Citizens (`role: 'citizen'`)** with live dynamic needs (`heat`, `sandiness`, `thirst`, `social`, `curiosity`), Time-of-Day sunset rhythm, **10–15s dynamic shower turns** (toggling `shower_spray.mp3` ON/OFF dynamically!), NPC-to-NPC separation, and an active **Stuck-Detector** with tangential obstacle sidestepping.
+  - **PBR Micro-Normal, Per-Vertex Roughness/Sheen/SSS & Sculpted Anatomy NPC Overhaul (`HumanRig.ts` — 1 Draw Call per NPC!):**
+    - Preserved UVs and added a shared tileable procedural **skin-pore & linen-weave micro-normal map** + per-vertex `aMatProps = vec2(roughness, matType)` shader encoding: hydrated sun-tan skin SSS + backlit rim glow (`roughness 0.48`), matte woven summer fabric with velvety grazing cloth sheen (`roughness 0.84–0.86`), sunlit crown hair highlight (`roughness 0.56`), and razor-sharp glossy eyes/cornea catchlight/sunglasses/watch dial (`roughness 0.05–0.14`).
+    - Added sculpted pectoral/sternum/spine chest contours, glute/pelvis curves, tapered jawlines, sculpted palm/thumb/fingers hands, flip-flop V-straps, tailored linen shirt button plackets/pockets, boardshort drawstrings, live chest breathing, and natural **head-look glances** toward the nearby player.
+  - **Grounded Pier Approach Ramp, 4-Point Buoyant Kayaks, Outdoor Beach Audio & 4-Zone Water Entry (`CoastalLandmarks.ts`, `PlayerController.ts`, `SoundEngine.ts`):**
+    - Rebuilt the Ocean Pier landward approach ramp (`z = -23.5 .. -14.0`) with sloped timber side stringers, center keel beam, 3 pairs of grounded timber support bents/cross-bearers, descending hemp-rope handrails, and side colliders (zero floating planks, zero under-ramp NPC clipping!).
+    - Upgraded BOTH player and NPC kayaks with higher-freeboard sculpted hulls and **TRUE 4-Point Multi-Hull Wave Buoyancy** (bow, stern, port, starboard sampling + live wave-matched pitch & roll — zero wave submerging!).
+    - Replaced the old busy indoor crowd `beach_chatter.mp3` with an authentic **96kHz Beeld en Geluid outdoor Zandvoort seaside beach field recording**, upgraded `water_tread_lap.mp3`, and added real `ankle_splash.mp3` (`50` real MP3s total!).
+    - Rebuilt water entry audio into **4 seamless depth zones**: immediate `'ankle'` splash steps right at `0.015m` swash patches, deeper `'wade'` slosh at `0.22m+`, continuous velocity-scaled leg-drag water swish starting at `0.03m`, post-swim sun-drying water drips, plus interactive **`[E]` Beach Rinse Shower** and **`[E]` Beach Cabana Outfit Switcher** (4 coastal outfits!).
+  - **11 Brand-New Real Water, Swimming, Underwater & Lifeguard MP3s (`SoundEngine.ts`, `PlayerController.ts`, `main.ts` -> `49` real MP3s, `18/18` active ambient loops, `0` oscillators, `0` synthetic noise):**
+    - Added real Wikimedia Commons recordings transcoded at 128 kbps MP3: `water_tread_lap.mp3` (live water-tread/floating lap bed triggered whenever wading/swimming), `swim_stroke_1.mp3` & `swim_stroke_2.mp3` (alternating L/R stereo freestyle/breaststroke splash pulls), `wade_slosh.mp3` (dedicated ankle/knee wade footsteps), `surface_emerge.mp3` (crisp burst the instant the camera breaks above the waves), `underwater_scuba_bed.mp3` (layered deep-dive ambience), `underwater_exhale.mp3` (muffled scuba bubble bursts during underwater strokes), `deep_whale_call.mp3` (rare deep-reef distant whale calls when `cameraSubmersion > 0.85`), `pier_water_slap.mp3` (localized lapping under Ocean Pier pilings), `rock_surf_lap.mp3` (localized rocky surge along West/East headlands), and `lifeguard_whistle.mp3` (real spatialized brass whistle blown by Patrol Lifeguard #2).
+  - **Realistic Coastal Border & Backcountry Environment (`CoastalLandmarks.ts`, `CoastalFoliage.ts`, `main.ts`):**
+    - Built **Terrain-Following Split-Rail Timber Dune-Conservation Border Fences** (`weathered_brown_planks` notched posts, twin rails, mid-line hemp rope) framing the West border (`x=-66..-71`), Rear ridge (`z=-54.5`), and East border (`x=+66..+71`), capped by **Coral-Stone Coastal Reserve Portal Walls** (`"COASTAL RESERVE • PROTECTED DUNES"`) at both ends of the boardwalk (`x = ±63.2`).
+    - Built **East Headland Coastal Lighthouse** (`x=78, z=-14`) with coral-stone plinth, red-and-white tapered masonry tower, iron gallery, lantern room, keeper's cottage, and a **custom gradient-faded volumetric golden rotating beacon beam** (`ShaderMaterial` with smooth longitudinal + rim fade).
+    - Built **3 Mediterranean Cliffside Coastal Villas** (`z=-59.5..-63`) with coral-stone plinths, terracotta hipped roofs, shaded verandas, teal shutters, and warm amber glowing sunset windows.
+    - Built **2-Stall Coastal Beach Changing Cabana** (`x=-54.5, z=-34.5`), cedar **`NEON COVE` Entry Archway** (`x=0, z=-35.0`), and an **18-Buoy Wave-Bobbing Swim-Zone Safety Buoy Line** (`z=36..44`, `InstancedMesh`).
+    - Replaced uniform back-row palm spam with curated coastal palm groves + **34 Realistic Feathered Conifer-Needle Coastal Pines** (`InstancedMesh`, custom alphaTest pine-needle bough texture).
+    - Added `East Lighthouse`, `Beach Cabanas`, and `Entry Archway` to the top-center Compass landmarks.
+  - **Upgraded NPC Realism & Anatomical Details (`HumanRig.ts` — ZERO extra draw calls per NPC):**
+    - Upgraded `bakeSkinnedCharacter()` to **smooth dual-bone joint skinning** (`skinIndices = [boneIdx, parentIdx]` with distance-blended weights across every joint) and eliminated rigid sphere ball-joints.
+    - Added **warm subsurface skin wrap-lighting** (`onBeforeCompile` on `SHARED_LAND_HUMAN_MAT`), baked vertical anatomical AO, detailed eyes with **colored iris rings** (`blue/hazel/green/brown`) + upper lashes + brows, and baked 3D coastal kits: **`isLifeguard`** (chest cross emblem front/back, red lifeguard visor cap, brass whistle lanyard, red Rescue Torpedo Buoy), **`snorkelGear`** (cyan dive mask, orange-tip J-snorkel, swim fins), `baseballCap`, `sandals`, `watch`, and `necklace`.
+    - Added 5 new animations: `'scan_horizon'`, `'whistle_signal'`, `'snorkel_kick'`, `'float_tube'`, and `'sup_paddle'`.
+  - **Autonomous Patrol Lifeguard #2 & 10 Offshore Ocean Bathers (`NpcManager.ts`, `PlayerController.ts`, `main.ts` -> `87` total NPCs):**
+    - **Tower Lifeguard #1** upgraded with full `isLifeguard` kit + `'scan_horizon'` eye-shade watch animation.
+    - **Autonomous Patrol Lifeguard #2 (`role: 'patrol_lifeguard'`):** Patrols the entire shoreline leaving sand footprints, halts to scan offshore bathers (`scan_horizon`), blows spatialized `lifeguard_whistle.mp3` (`whistle_signal`), waves dynamically to nearby players, blows a warning whistle if the player swims beyond the outer buoy line (`z > 39.5`), and supports interactive **`[E]` Ask Patrol Lifeguard for Bay Report** (live wave height, water temp, safety tip & nearest Golden Shell hint).
+    - **10 Offshore Ocean Bathers (`z = 16..33`):** 4 Offshore Freestyle Lap Swimmers (`z=21..27.5`), 2 Coral-Reef Snorkelers (`snorkelGear: true`, emitting bubbles at `z=29..31`), 2 Inflatable Donut-Ring Ocean Floaters (`z=17.5..18.8`), and 2 Offshore Stand-Up Paddleboarders (`z=26.5..30.5`, animated SUP paddles).
+  - **100% Real-Sounds-Only Audio Engine (`SoundEngine.ts`, 49 real MP3s in `public/audio/`):**
+    - Eliminated ALL synthesized oscillators and ALL synthesized pink noise buffers (`0` `createOscillator`, `0` `createPinkNoiseBuffer`).
+    - Downloaded & transcoded **24 new real Wikimedia Commons field/studio recordings** (128 kbps MP3s) expanding the library to **38 real MP3s** and **14 live spatial ambient loops**: `palm_wind.mp3`, `tropical_rain.mp3`, `wind_chimes.mp3` (Koshi chimes at East Overlook & West Hammocks), `sunset_crickets.mp3` (auto-crossfades in during Golden Hour & Sunset), `espresso_brew.mp3` (West Coffee Cart), `shower_spray.mp3` (Beach Rinse Shower), `biplane_prop.mp3` (tracks `"NEON COVE"` sky biplane), plus existing `ocean_waves_birds`, `close_waves`, `tiki_bar_music`, `beach_chatter`, `bonfire_crackle`, `tropical_birds`, and `underwater_ambience`.
+    - Added **Dynamic Real Wildlife & Maritime One-Shot Call Scheduler**: spatialized overhead European Herring Gull cries (`seagull_call_1/2.mp3`), Scarlet Macaw dune calls (`macaw_call.mp3`), real Caribbean underwater dolphin vocals (`dolphin_call.mp3`) while diving in the coral reef, distant sea-buoy metallic bell (`buoy_bell.mp3`), and moored wooden rowboat hull creaks (`wood_creak.mp3`).
+    - Upgraded ALL interactive SFX to 100% real recordings with multi-sample variety: alternating real ukulele strums (`ukulele_strum_1/2.mp3`), real iced drink pour + ice clink (`drink_pour.mp3` + `ice_clink.mp3`), real acoustic shell discovery chime (`shell_chime.mp3`), real wooden chest creak + rattling coins (`wood_creak.mp3` + `treasure_coins.mp3`), real water bubble pop (`bubble_pop.mp3`), real Canon SLR camera shutter (`camera_shutter.mp3`), dedicated real soccer ball kick (`soccer_kick.mp3`), and multi-surface footsteps (`wood_step` / `wood_step_2`, `stone_step`, `sand_steps`, `surf_splash`).
+  - **Poly Haven CC0 1k PBR Texture & Architectural Staircase Overhaul (`pbrMaterials.ts`, `CoastalLandmarks.ts`, `BeachProps.ts`, `CoastalTerrain.ts`):**
+    - Downloaded **9 genuine Poly Haven CC0 1k PBR texture sets** (`27` diffuse/normal_gl/roughness maps in `public/textures/pbr/`): `oak_wood_planks`, `wood_floor_deck`, `white_planks_clean`, `coral_stone_wall`, `bamboo_wall_02`, `sparse_grass`, `rough_linen`, `weathered_brown_planks`, and `terry_cloth`.
+    - Built `makeWorldBoxGeo` & `makeWorldCylinderGeo` proportional meter-scaled UV utilities (`pbrMaterials.ts`) eliminating stretched textures on EVERY stair, tread, riser, stringer, handrail, terrace, post, and deck.
+    - Rebuilt ALL staircases (Lifeguard Watchtower, Water Slide Tower, Tiki Bar, and all 6 Patio Terraces) with **coral-stone masonry foundations & risers**, **overhanging golden oak bullnose treads**, **painted coastal white kick-board risers**, **brushed marine brass anti-slip edge nosing**, **vertical turned balusters**, and **capped newel posts**.
+    - Upgraded boardwalk & pier planks with warm golden oak PBR + per-plank tonal variation, Water Slide chute with UV-mapped glossy striped marine fiberglass, Tiki Bar & Tiki Torches with real `bamboo_wall_02` + brass collars, Beach Umbrellas/Hammocks/Ropes with `rough_linen` PBR, Beach Towels/Cushions with `terry_cloth` PBR, and Coastal Dune Hillsides (`CoastalTerrain.ts`) with dual-scale anti-tiling `sparse_grass` + `coral_stone_wall` cliff PBR!
+  - **Loading Screen, Aerial Welcome Screen, Mouse Lock & HUD Redesign (All Retained & Verified):**
+    - Frosted-glass Loading Screen (`0% -> 100%`) -> Live aerial Welcome Card with smooth `1.15s` camera swoop-in, persistent Mouse Lock toggle (`L`), uncluttered top-left, bottom-right Golden Shell Counter + clickable Field Guide Drawer, collapsible top-right controls, Brass 3× Telescope, Tropical Drink Boost, Bonfire Ukulele Strum, Sunken Treasure Chest, Deep-Reef Jellyfish, Bubble Rings (`[F]`), and Sunshower Rainbow Arc.
+  - **Spatial Clarity & Calm Headroom Audio Overhaul (`SoundEngine.ts`, `main.ts`, `scripts/qa_audio_balance.mjs`):**
+    - Reduced `effectiveMasterGain` (`0.90 -> 0.56`, ~`-4.1 dB` calmer default headroom).
+    - Added camera-orientation-driven directional `StereoPannerNode` + `computeStereoPan()` on `oceanBirds`, `closeWaves`, `tikiMusic`, `beachChatter`, `bonfireCrackle`, and `tropicalBirds`.
+    - Added EQ frequency carving (`oceanBirds` LPF `1650 Hz`, `closeWaves` LPF `1150 Hz`, `tropicalBirds` HPF `700 Hz` + natural breathing phrasing).
+    - Tightened spatial radii (`tikiMusic` `24.5m`, `bonfireCrackle` `15.5m`, `beachChatter` quadratic falloff across 6 hubs with whisper-quiet `0.028` floor) and added `'soccer'` kick SFX.
+    - Verified all 9 spots + 3 new separation/headroom gates (`tikiMusic` Tiki vs Pier `>= +18 dB`, `beachChatter` Tiki vs Pier `>= +8 dB`, Spawn master RMS `<= -34.0 dBFS`) — `08_pier_end` now drops to peaceful `-61.3 dBFS` open ocean!
+  - **Expanded Coastline, Sky/Ocean Polish & Wave-2 Poly Haven CC0 Assets (`AtmosphereSystem.ts`, `OceanSystem.ts`, `CoastalLandmarks.ts`, `CoastalFoliage.ts`, `CoastalModels.ts`):**
+    - Added **11 newly downloaded, audited, and 4-angle visually verified Poly Haven CC0 1k GLTF models** (`27 -> 38` loaded models total): `CoffeeCart_01`, `painted_wooden_bench` (×4 ocean-facing), `bronze_ray_statue` (on East Lagoon stone plinth), `bronze_shark_statue` (on West Trailhead stone plinth), `Ukulele_01` (leaning on Bonfire driftwood log), `planter_box_01` (×2 blooming with `flower_gazania`), `lifebuoy` (flat on boardwalk beside Lifeguard stairs), live wave-bobbing `ocean_buoy` in East Swim Cove, `bananas` (Tiki Bar & Coffee Cart counters), `flower_gazania`, and `flower_ursinia`. Removed 9 unused high-poly downloads (`island_tree_01`, `ship_pinnace`, etc.) to keep the repo lean.
+    - Extended boardwalk promenade & dune rope fence to `-62..+62m`, built **West Coffee & Smoothie Cart Pergola Deck** (`-47.5`), **East Lagoon Scenic Overlook Pergola Deck** (`+48.5`), **West Palm Hammock Grove** (2 curved striped canvas hammocks), **East Lagoon Kayak Launch Cove** (2 sculpted kayaks with paddles), and animated **East-Beach Soccer Kickabout** (`48.0..54.5, z=-16.0`).
+    - Expanded coastal palms from `62 -> 90` wrapping `-94..+94m`, Marram dune grass (`560 -> 760`), underwater seagrass (`200 -> 280`), added **Twilight Starfield** + **Dual-Layer Sunlit Cumulus Clouds** (`AtmosphereSystem.ts`), crisper **Lacy Shorebreak Foam** (`OceanSystem.ts`), and **Bioluminescent Sunset Reef Coral Glow** (`CoastalFoliage.ts`).
+  - **76 Autonomous NPCs, Underwater Manta Ray, & Interactive Player HUD (`NpcManager.ts`, `CoastalWildlife.ts`, `PlayerController.ts`, `HudController.ts`, `index.html`, `style.css`):**
+    - Expanded from `60 -> 76` NPCs (`+16`): `+2` Wave-Riding Surfers on surfboards, `+2` Autonomous East Lagoon Kayakers with animated double-blade paddles, `+2` West Palm Hammock Loungers, `+2` Bonfire Sunset Circle Guests (with Time-of-Day Sunset dance/cheer shift), `+2` East-Beach Soccer Kickabout Players, `+2` West Coffee Cart Barista & Guest, `+2` Full-Promenade Routine Guests (`-54..+54m`), and `+2` Bronze Monument Explorers.
+    - Added a **Graceful Swimming Underwater Manta Ray** + **2nd Swimming Sea Turtle** cruising over the deep coral reef (`CoastalWildlife.ts`).
+    - Added contextual **`[E]` Ride Water Slide** trigger & glassmorphic prompt pill (`PlayerController.ts`, `HudController.ts`) plus an **8-Spot Scenic Quick-Travel Bar** (`Bay`, `Tiki`, `Coffee`, `Fort`, `Slide`, `Raft`, `East`, `Reef`).
+  - GitHub Pages publish remains intentionally held pending user review on `http://127.0.0.1:5173/`.
 
 ### Objective
-- Build and iterate a polished, high-fidelity browser 3D beach and underwater vertical slice with smooth graphics, realistic water, dynamic RTT footprints, spatial audio, and zero console/shader errors.
-- Current task: Complete graphics & immersion overhaul (bigger beach, realistic water, footprint proportions, water-entry splashes/ripples, hair fix, realistic audio, anti-aliasing), establish `PROJECT_STATUS.md`, and republish live GitHub Pages build.
-- Future task: Expand world richness & interactive props once user confirms the graphics baseline (e.g., small beachside shop/kiosk, additional kids/beach toys, more realistic downloaded GLB props and human models).
+- Deliver a photorealistic pale-silica coastal beach and underwater demo with zero shader/console warnings, crisp slide/pier/swim physics, calm spatially separated real audio, and `<= 650` draw calls / `<= 1.1M` triangles.
+- Future task: Publish to GitHub Pages (`main` + `gh-pages`) once user approves the local build.
 - Success criteria:
-  - `npm run build` (`tsc && vite build`) passes with exit code `0`.
-  - Headless Chrome WebGL2 verification reports `0` console errors, `0` warnings, and `0` uncaught exceptions.
-  - Visual inspection confirms anti-aliased silhouettes, photoreal sand/water/refraction, human-scale footprints, water-entry splashes/ripples, zero hair clipping, and underwater god rays/caustics/muffled audio (`18,000 Hz -> 320 Hz`).
-  - Live public URL `https://markmachina2025.github.io/BeachProjectNeon/` serves HTTP 200 with all `./textures/*` and `./audio/*` assets intact.
+  - `npm run build --prefix "D:\AI\BeachProjectNeon"` exits `0`.
+  - `node "D:\AI\BeachProjectNeon\scripts\qa_audio_balance.mjs"` exits `0` across all 9 locations.
+  - `node "D:\AI\BeachProjectNeon\scripts\qa_inspect_world.mjs"` exits `0` across all 30 viewpoints (`0` errors, `0` warnings, `draws <= 650`, `tris <= 1,100,000`, all `8` ambient loops, Pier-Jump airborne > 0, 3rd-Person Swim `dived=false`, underwater `sub > 0.5`).
 
 ### Confirmed requirements
-- Project directory is `D:\AI\BeachProjectNeon` (outside T3 default workspace `C:\Users\aoike\.t3\projects\fruitflytest`).
-- Maintain `D:\AI\BeachProjectNeon\PROJECT_STATUS.md` using the attached `project-status` skill template after milestones.
-- Beach expanded ~50% larger (`X: [-84, 84]`, `Z: [-62, 112]`).
-- Anti-aliasing required (no pixelated/jagged edges): implemented via 1.35×–2.0× SSAA + FXAA 3.11 Quality + 8× anisotropic filtering + soft HDR bloom.
-- Footprints must have realistic human proportions (not elongated/dinosaur-sized): fixed to `0.21m × 0.36m` stamp quad (`~11cm × 27cm` recessed sole) on a `2048×2048` ping-pong RTT.
-- Water must look realistic using external open-source textures/techniques (not basic procedural noise) and must show physical entry splashes/ripples when stepping in (not clipping into flat blue).
-- Character hair must not clip through the head.
-- Audio must use realistic recorded sound assets rather than synthetic browser oscillator tones.
-- Hosted publicly for free on GitHub Pages (`https://markmachina2025.github.io/BeachProjectNeon/`).
-- Focus on graphics and larger beach first before adding extra world buildings/stores.
+- Project directory is `D:\AI\BeachProjectNeon`.
+- `D:\AI\BeachProjectNeon\fable5.2 beach project\` is strictly read-only.
+- Maintain `D:\AI\BeachProjectNeon\PROJECT_STATUS.md` and `D:\AI\BeachProjectNeon\LESSONS_FROM_FABLE_5_2.md`.
+- Do NOT overwrite/republish GitHub Pages (`gh-pages`) until user approves the local version.
+- **Mandatory Downloaded-Asset Placement & Inspection Workflow:** Always download real CC0 assets (Poly Haven GLTFs / PBR textures / recorded MP3s) for hero props/foliage/structures, immediately run `scripts/qa_inspect_asset.mjs` + visually inspect 4 close-up PNGs, and fix any grounding/clipping/orientation defects before continuing.
 
 ### Execution state
-- Completed:
-  - `vite.config.ts`, `tsconfig.json`, `package.json`, `index.html`, `src/style.css`, `.gitignore`, `RESEARCH_AND_ARCHITECTURE.md`.
-  - `src/terrain/terrainMath.ts`: +50% expanded crescent bay heightfield, matching `TERRAIN_HEIGHT_GLSL`, and static collider registry.
-  - `src/terrain/FootprintSystem.ts`: `2048×2048` ping-pong RTT covering `144m × 92m` (`X: [-72, 72]`, `Z: [-56, 36]`) with realistic `0.21m × 0.36m` left/right barefoot stamps and differential wet-wave vs dry-sand fade.
-  - `src/terrain/CoastalTerrain.ts`: `320×320` CSM PBR terrain sampling Poly Haven CC0 `coast_sand_01` (`sand_Diffuse.jpg`, `sand_nor_gl.jpg`, `sand_Rough.jpg`) with dual-scale anti-tiling, quartz micro-glints, wet-dry shoreline sheen, RTT footprint normals/AO, and seabed caustics.
-  - `src/ocean/wavePhysics.ts`: Shared 6-wave directional Gerstner spectrum (CPU + `GERSTNER_GLSL`).
-  - `src/ocean/OceanSystem.ts`: 4-octave official Three.js seamless water normal maps (`waternormals.jpg`, `water_normal_1.jpg`, `water_normal_2.jpg`), true screen-space refraction (`tRefractColor`, `tRefractDepth`) with Beer-Lambert absorption, domain-warped organic lacy seafoam, Schlick Fresnel, SSS, and underwater Snell's window.
-  - `src/ocean/WaterInteractionSystem.ts`: Live wave-conforming expanding concentric ripple/foam rings and ballistic 3D glistening water splash droplets on water entry, wading steps, and swim strokes.
-  - `src/ocean/UnderwaterPostProcess.ts`: 4-stage pipeline (`refractTarget` pre-pass -> supersampled HDR + `DepthTexture` `renderTarget` -> waterline meniscus, underwater Beer-Lambert fog, 9-tap optical blur, edge CA, 28-step volumetric god rays, soft HDR bloom & ACES -> FXAA 3.11 Quality pass).
-  - `src/ocean/UnderwaterParticles.ts`: Sun-shaft-lit drifting plankton motes and rising 3D bubbles.
-  - `src/environment/AtmosphereSystem.ts`: Calibrated Rayleigh/Mie sky dome with sun disc, wispy clouds, PMREM IBL, texel-snapped `2048×2048` `PCFSoftShadowMap`, and Dawn/Midday/Golden Hour/Sunset controls.
-  - `src/environment/CoastalFoliage.ts`: 22 wind-swaying palm trees with Poly Haven `bark_brown_01` PBR textures, 540 instanced dune grass tufts, submerged kelp & coral heads.
-  - `src/environment/BeachProps.ts`: Poly Haven `coast_land_rocks_01` coastal & underwater reef boulders, 6 striped beach umbrella/chair/towel/cooler camps, surfboards, driftwood with bark PBR, shells, wave-bobbing buoys, beach ball, and inflatable swim ring.
-  - `src/characters/HumanRig.ts`: 20-segment anatomical lofted human rig with offset outer hair dome + nape coverage (zero skull clipping), properly seated sunglasses, wet-skin sheen, underwater caustics, and damped pose blending.
-  - `src/characters/NpcManager.ts`: 10 human NPCs (2 sunbathers, 1 chair lounger, 2 chatting near shore, 3 shoreline walkers/waders stamping footprints & splashes, 2 shallow-water players near beach ball & swim ring).
-  - `src/player/PlayerController.ts`: Damped spring-arm 3rd/1st person (`V`) controller with dry/wet sand, wading, buoyant surface swimming, and diving physics + water-entry splash/wake triggers.
-  - `src/audio/SoundEngine.ts`: Real recorded MP3 sample engine (`ocean_waves_birds.mp3`, `close_waves.mp3`, `sand_swish.mp3`, `sand_steps.mp3`, `water_splash.mp3`, `water_jump.mp3`, `underwater_ambience.mp3`, `underwater_bubbles.mp3`) with wave-synced swells and smooth `18,000 Hz -> 320 Hz` Biquad LPF sweep underwater.
-  - `src/ui/HudController.ts` & `src/main.ts`: Clamped `dt <= 0.05s` loop, glassmorphic HUD (`H` hide, `M` mute, `V` perspective, `AA: FXAA + SSAA` toggle), and `window.__BEACH_DEMO__` test hooks.
-- Verified:
-  - `npm run build --prefix "D:\AI\BeachProjectNeon"` (`tsc && vite build`): Exit `0`, built in `578ms` (`dist/assets/index-DbrVBc5R.js` 660.38 kB).
-  - Headless Chrome WebGL2 verification (`1280×800`) against `http://127.0.0.1:5173/`: `consoleErrors: []`, `consoleWarnings: []`, `exceptions: []`, `npcCount: 10`, walking `DRY SAND -> WET SAND -> WADING` (`footprintStamps: 3 -> 55`), diving `-2.93m` (`lowPassHz: 18000 -> 320`), `hudHidden: true`.
-  - Visual screenshot audit of `01_beach_vista.png`, `02_sand_footprints.png`, `03_wading_splash.png`, and `04_underwater_godrays_caustics.png` confirmed clean anti-aliased edges, refracting turquoise water, human-scale footprints, wading ripple rings & splash droplets, zero hair clipping, textured boulders/sand/palms, and smooth underwater god rays.
+- Verified (`task-3606`, exit `0`):
+  - **Production Build (`npm run build`):** Exit `0` (`dist/assets/index-sHybYowl.js` `1,052.91 kB`, built in `1.36s`).
+  - **12-Point Forensic Bug-Hunt Suite (`scripts/qa_bug_hunt.mjs`, `scratch/qa_bug_hunt/`):** Exit `0`, **`12/12` CHECKS PASSED!**
+    - Forward-facing West Boardwalk Bench & East Overlook Bench `[E]` sitting (flat feet, back on backrest), Picnic Table `[E]` sitting + verified clean backward stand-up exit (`z: -27.91 -> -27.41`), empty East Café Table chair `[E]` sitting, Ocean Pier Bench `[E]` sitting, flush Tiki Bar stools, silky wading & swimming wakes (zero blue halo / zero milky smear), live `[E]` Swim Ring floating, live `[E]` Kayak launch & driving (zero deck Z-fighting), clean sunlit Bonfire ukulele, and sealed Moored Rowboat floorboards (`errors=0`).
+  - **Deep Forensic Verification (`scripts/qa_verify_deep.mjs`, `scratch/qa_deep_verify/`):** Exit `0`, **`12/12` CHECKS PASSED!**
+    - Weather presets & Wave Slider sync (`breeze 145/1.45×`, `mist 75/0.75×`, `clear 100/1.00×`, Rain removed), Beach Shower exact alignment (`err=0.00m at [-18.20, -22.54]`), Boardwalk Bench & Picnic Table `[E]` sitting, horizontal `[E]` Swim Ring, 8s live zero-stuck pathing audit (`stuck=0, citizens=21`), `kayakerCount=4`, `offshoreWaterCount=20`, `errors=0`.
+  - **9-Spot Audio Balance & Spatial Separation Audit (`scripts/qa_audio_balance.mjs`):** Exit `0`, **`ALL 9-SPOT AUDIO BALANCE GATES PASSED!`**
+    - `01_spawn`: `master -53.3/-33.5 dBFS`, `beachChatter -60.5/-47.3`, `closeWaves -59.3/-45.4`, `oceanBirds -72.9`.
+    - `02_tiki_bar`: `master -40.8/-28.1 dBFS`, `tikiMusic -41.7/-29.0`, `beachChatter -51.0/-39.0`.
+    - `05_surf_beachball`: `master -53.2/-32.4 dBFS`, `closeWaves -55.6/-41.3`, `sfxBus -60.6/-33.5`.
+    - `08_pier_end`: `master -57.7/-42.5 dBFS` (`tikiMusic off`, `beachChatter -71.3`).
+    - `09_underwater_reef`: `master -50.5/-32.2 dBFS`, `underwater -70.2/-48.9`, `LPF=320Hz`.
+  - **30-Viewpoint World QA (`scripts/qa_inspect_world.mjs`, `scratch/qa_water_npc_final/`):** Exit `0`, **`ALL NUMERIC & TELEMETRY GATES PASSED!`**
+    - Console errors / warnings / page exceptions / network failures: `0 / 0 / 0 / 0`, `failures: []`.
+    - Loaded Poly Haven 1k GLTF models: `38`; autonomous NPCs: `89`; active real MP3 ambient loops: all `18/18` (`50` real MP3s total!).
+    - Real WebGL draws across 30 viewpoints: `151–646` (limit `<= 650`); FPS: `203–240`.
+    - Real WebGL triangles across 30 viewpoints: `344,897–1,055,207` (limit `<= 1,100,000`).
+    - Physics & immersion: deep-water buoyancy `waveLift = 0.709m`; Pier-Jump `airborneSamples = 13`, `reachedWater = true`, `maxY = 3.015`; 3rd-Person Swim `distMoved = 4.43m`, `dived = false`, `minY = -1.569`, `maxCamSub = -1.122`; underwater submersion `27: sub = 1.62`, `28: sub = 0.82`; `23_shoreline_waves_160_audio`: `-54.85/-36.25 dBFS`.
 - Pending:
-  - Commit and push updated `main` and redeploy `dist/` to `gh-pages` branch, then verify live GitHub Pages HTTP 200 (executing immediately after writing this file).
+  - User playtest/review on local `http://127.0.0.1:5173/` (GitHub Pages publish intentionally held until approved).
 - Blocked: None.
-
-### Decisions
-- **GitHub Pages via orphan `gh-pages` branch** instead of GitHub Actions: `gh` OAuth token has scopes `'gist', 'read:org', 'repo'` (no `'workflow'` scope), so pushing `dist/` + `.nojekyll` directly to `gh-pages` works cleanly without workflow permission failures.
-- **Relative Vite `base: './'`** in `vite.config.ts` and relative `./textures/...` & `./audio/...` asset paths so both local `vite dev` and `https://markmachina2025.github.io/BeachProjectNeon/` resolve assets cleanly.
-- **FXAA 3.11 + SSAA (1.35×–2.0×) post-pass** instead of MSAA render target: WebGL2 forbids sampling a multisampled `DepthTexture` directly, so supersampling + FXAA 3.11 on luma delivers smooth edges while preserving exact depth-based refraction, waterline meniscus, optical blur, and volumetric god rays.
-- **Real CC0/royalty-free textures & MP3 samples stored locally in `public/`**: Ensures deterministic zero-CORS loading on GitHub Pages with photoreal material fidelity and authentic sound.
-
-### Deferred possibilities
-- Adding a small beachside shop / boardwalk kiosk, more children/toys in the surf, and external GLB beach props/characters (explicitly deferred by user until graphics and beach scale are polished).
-- Code-splitting Three.js vendor chunk via `rollupOptions.output.manualChunks` to silence Vite's 500 kB chunk-size info notice.
 
 ### Operational context
 - Root path: `D:\AI\BeachProjectNeon`
-- Entry points: `D:\AI\BeachProjectNeon\index.html`, `D:\AI\BeachProjectNeon\src\main.ts`
-- Local runtime/tools verified: Node `v26.13.0`, npm `11.12.1`, Git `C:\Program Files\Git\cmd\git.exe`, GitHub CLI `C:\Users\aoike\.toolbox-keys\gh\bin\gh.exe` logged in as `MarkMachina2025` (scopes: `gist`, `read:org`, `repo`).
-- Dependencies (`package.json`): `three ^0.172.0`, `three-custom-shader-material ^6.4.0`; devDependencies: `@types/three ^0.172.0`, `typescript ^5.7.3`, `vite ^6.1.0`.
-- Asset inventory:
-  - `public/textures/` (10 files): `waternormals.jpg`, `water_normal_1.jpg`, `water_normal_2.jpg` (Three.js MIT), `sand_Diffuse.jpg`, `sand_nor_gl.jpg`, `sand_Rough.jpg`, `rock_Diffuse.jpg`, `rock_nor_gl.jpg`, `wood_Diffuse.jpg`, `wood_nor_gl.jpg` (Poly Haven CC0).
-  - `public/audio/` (8 files): `ocean_waves_birds.mp3`, `close_waves.mp3`, `sand_swish.mp3`, `sand_steps.mp3`, `water_splash.mp3`, `water_jump.mp3`, `underwater_ambience.mp3`, `underwater_bubbles.mp3` (Mixkit).
-- Build & run commands:
-  - Dev server: `npm run dev --prefix "D:\AI\BeachProjectNeon"` (`http://127.0.0.1:5173/`)
-  - Type-check & production build: `npm run build --prefix "D:\AI\BeachProjectNeon"`
-- Git/hosting:
-  - Repo: `https://github.com/MarkMachina2025/BeachProjectNeon`
-  - Live URL: `https://markmachina2025.github.io/BeachProjectNeon/`
-  - Repo-local git identity configured: `MarkMachina2025 <MarkMachina2025@users.noreply.github.com>`.
-- Known runtime quirks:
-  - Downloading files directly into `public/` while `vite dev` is watching on Windows can trigger an `EBUSY` watcher exit on Vite; restart `npm run dev` if adding binary files to `public/`.
-  - `window.__BEACH_DEMO__` exposes `{ getState, teleport, setSun, setWaveIntensity, toggleFirstPerson, emitTestBubbles, unlockAudio }` for automated verification.
-
-### Issues and uncertainty
-- Audio sample playback requires a real user gesture in standard browsers (`SoundEngine.unlock()` triggers on first click/keydown); headless verification used `autoplay-policy=no-user-gesture-required` to confirm decoding and LPF sweep, while subjective audio mix balance across all 8 MP3 clips should be ear-checked by the user on the live site.
-- `water_jump.mp3` (4.68 MB) and `water_splash.mp3` (2.17 MB) are decoded asynchronously on first interaction; on very slow connections, splashes wait ~1–2s until decoded (could be trimmed/compressed later if faster initial audio load is desired).
-
-### Resume instructions
-1. Read `D:\AI\BeachProjectNeon\PROJECT_STATUS.md` completely before editing code.
-2. Collect user feedback on the newly deployed graphics/audio/beach-size pass at `https://markmachina2025.github.io/BeachProjectNeon/`.
-3. For the next world-building milestone (beachside store/kiosk, more realistic external GLB props/characters, extra beachgoers/toys), add modular assets under `public/models/` and register colliders via `addCollider()` in `src/terrain/terrainMath.ts`.
-4. Run `npm run build --prefix "D:\AI\BeachProjectNeon"`, run headless Chrome visual verification, redeploy `dist/` to `gh-pages`, and update `PROJECT_STATUS.md` in place.
+- Local Vite dev daemon currently running: `0f990142-cbc8-4cfd-ae38-d5103c7a18ea/task-3271` at `http://127.0.0.1:5173/`
+- Per-batch 4-angle asset QA command: `node "D:\AI\BeachProjectNeon\scripts\qa_inspect_asset.mjs" <name> <x> <y> <z> [radius]`
+- 12-point forensic bug-hunt command: `node "D:\AI\BeachProjectNeon\scripts\qa_bug_hunt.mjs"`
+- Deep forensic verification QA command: `node "D:\AI\BeachProjectNeon\scripts\qa_verify_deep.mjs"`
+- 9-location audio balance QA command: `node "D:\AI\BeachProjectNeon\scripts\qa_audio_balance.mjs"`
+- Permanent 30-point world QA command: `node "D:\AI\BeachProjectNeon\scripts\qa_inspect_world.mjs"`
+- Build command: `npm run build --prefix "D:\AI\BeachProjectNeon"`
+- Public GitHub repo: `https://github.com/MarkMachina2025/BeachProjectNeon`
 
 ## 2. Human summary
 
-**Neon Cove** (`D:\AI\BeachProjectNeon`) is an interactive WebGL2 3D coastal beach and underwater tech demo featuring a +50% expanded crescent sandy bay, photorealistic Poly Haven PBR sand/rock/wood textures, multi-octave normal-mapped ocean water with true screen-space refraction, realistic human-sized 2048×2048 real-time sand footprints, dynamic water-entry ripple rings and 3D splash droplets, 10 animated beach NPCs (including swimmers playing with a beach ball and swim ring), real recorded coastal/underwater audio with a 18 kHz → 320 Hz underwater low-pass filter sweep, volumetric god rays, animated caustics, and FXAA 3.11 + SSAA anti-aliasing.
-
-The latest graphics, audio, and scale overhaul passed `tsc && vite build` and headless Chrome verification with zero console or shader errors, and is being published directly to the live GitHub Pages URL (`https://markmachina2025.github.io/BeachProjectNeon/`).
-
-**Next step:** Open the updated live link to test the bigger beach, refracting water, wading splashes, fixed hair, realistic footprints, and real audio, and let me know if any visual or audio tweaks are needed before we start adding the beach store and more world props/characters.
+Completed the **Water & Swimming Real-Audio Expansion, Realistic Coastal Border & Backcountry Environment Overhaul, Autonomous Patrol Lifeguard #2 + Offshore Ocean Bathers, and Dual-Bone NPC Realism Overhaul** for **Neon Cove** (`D:\AI\BeachProjectNeon`) — verified cleanly across **9 audio-audit spots** and **all 30 full-world viewpoints** with **`0` errors/warnings**, **`49` real MP3s (`18/18` active ambient loops, `0` oscillators/synthetic noise)**, **`38` loaded Poly Haven models**, **`87` autonomous NPCs**, **`154–648` draw calls**, and **`351K–1.058M` triangles**:
+- **11 New Real Water, Swimming, Underwater & Lifeguard MP3s (`SoundEngine.ts`, `PlayerController.ts`):** Live `water_tread_lap` loop while wading/swimming, alternating L/R `swim_stroke_1/2`, dedicated `wade_slosh`, crisp `surface_emerge`, layered `underwater_scuba_bed` + `underwater_exhale` + rare `deep_whale_call`, localized `pier_water_slap` & `rock_surf_lap`, and spatialized `lifeguard_whistle`.
+- **Realistic Coastal Border & Backcountry (`CoastalLandmarks.ts`, `CoastalFoliage.ts`):** Terrain-following split-rail dune-conservation border fences + Coral-Stone Coastal Reserve Portal Walls, East Headland Coastal Lighthouse with custom gradient-faded volumetric rotating beacon, 3 Mediterranean hillside villas with glowing sunset windows, 2-stall beach changing cabana, cedar `NEON COVE` Entry Archway, 18-buoy wave-bobbing swim-zone safety line, and 34 feathered conifer-needle coastal pines replacing back-row palm spam.
+- **Autonomous Patrol Lifeguard #2, 10 Offshore Bathers & Upgraded Dual-Bone Skinned NPCs (`HumanRig.ts`, `NpcManager.ts`):** Smooth dual-bone joint skinning, subsurface skin wrap-lighting, colored iris eyes, baked lifeguard/snorkel kits, Tower Lifeguard #1 horizon watch, autonomous Patrol Lifeguard #2 (shoreline patrol, footprints, whistles, buoy-line warning, `[E]` Bay Report), and 10 offshore swimmers/snorkelers/floaters/paddleboarders (`z = 16..33`). Local dev server running at `http://127.0.0.1:5173/` (`fable5.2 beach project\` untouched; GitHub Pages publish held for your review).

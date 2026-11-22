@@ -81,22 +81,27 @@ export class WaterInteractionSystem {
             if (r > 1.0) discard;
 
             float angle = atan(p.y, p.x);
-            float organic = sin(angle * 7.0 + uTime * 3.0) * 0.03 + cos(angle * 13.0 - uTime * 2.0) * 0.02;
-            float rr = r + organic;
+            float organic = sin(angle * 5.0 + uTime * 2.4) * 0.045 +
+                            cos(angle * 9.0 - uTime * 3.1) * 0.03 +
+                            sin(angle * 15.0 + uTime * 1.8) * 0.018;
+            float rr = r + organic * (0.4 + 0.6 * r);
 
-            // Primary expanding crest ring + trailing secondary concentric harmonic ripples
-            float ring1 = exp(-pow((rr - 0.80) / 0.075, 2.0));
-            float ring2 = exp(-pow((rr - 0.56) / 0.065, 2.0)) * 0.62;
-            float ring3 = exp(-pow((rr - 0.34) / 0.06, 2.0)) * 0.35;
-            float innerFoam = smoothstep(0.42, 0.05, rr) * (1.0 - uAgeNorm) * 0.55;
+            // Delicate, feathery, translucent expanding water wavelets (never a hard sticker circle!)
+            float wave1 = exp(-pow((rr - 0.78) / 0.11, 2.0)) * 0.68;
+            float wave2 = exp(-pow((rr - 0.48) / 0.10, 2.0)) * 0.42;
+            float softSplash = exp(-rr * rr * 5.5) * pow(max(0.0, 1.0 - uAgeNorm * 1.45), 1.6) * 0.58;
 
-            float pattern = ring1 + ring2 + ring3 + innerFoam;
-            float fadeIn = smoothstep(0.0, 0.12, uAgeNorm);
-            float fadeOut = pow(clamp(1.0 - uAgeNorm, 0.0, 1.0), 1.45);
-            float alpha = clamp(pattern * fadeIn * fadeOut * uIntensity * 0.88, 0.0, 0.92);
+            // Break ring softly around circumference so foam dissolves into natural wisps
+            float wispMask = 0.58 + 0.42 * sin(angle * 6.0 + r * 8.0 - uTime * 2.2) * cos(angle * 11.0 - uTime * 1.4);
+            float pattern = (wave1 + wave2) * wispMask + softSplash;
 
-            if (alpha < 0.01) discard;
-            vec3 foamCol = mix(vec3(0.76, 0.94, 0.98), vec3(0.98, 0.99, 1.0), clamp(ring1 + innerFoam, 0.0, 1.0));
+            float fadeIn = smoothstep(0.0, 0.16, uAgeNorm);
+            float fadeOut = pow(clamp(1.0 - uAgeNorm, 0.0, 1.0), 1.75);
+            float edgeSoft = smoothstep(1.0, 0.78, r);
+            float alpha = clamp(pattern * fadeIn * fadeOut * edgeSoft * uIntensity * 0.56, 0.0, 0.62);
+
+            if (alpha < 0.008) discard;
+            vec3 foamCol = mix(vec3(0.72, 0.93, 0.98), vec3(0.97, 0.99, 1.0), clamp(softSplash + wave1 * 0.6, 0.0, 1.0));
             gl_FragColor = vec4(foamCol, alpha);
           }
         `
@@ -121,19 +126,22 @@ export class WaterInteractionSystem {
       });
     }
 
-    // 2. Pool of ballistic 3D glistening water splash droplets
+    // 2. Pool of ballistic 3D glistening white sea-spray droplets
     const dropGeo = new THREE.SphereGeometry(1, 7, 6);
-    const dropMat = new THREE.MeshPhysicalMaterial({
-      color: 0xe6fbff,
-      roughness: 0.08,
-      metalness: 0.02,
+    const dropMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0xdff6ff,
+      emissiveIntensity: 0.32,
+      roughness: 0.38,
+      metalness: 0.0,
       transparent: true,
-      opacity: 0.78,
+      opacity: 0.68,
       depthWrite: false
     });
 
     this.dropletMesh = new THREE.InstancedMesh(dropGeo, dropMat, this.maxDroplets);
     this.dropletMesh.frustumCulled = false;
+    this.dropletMesh.visible = false;
     this.dropletMesh.renderOrder = 5;
 
     for (let i = 0; i < this.maxDroplets; i++) {
@@ -193,8 +201,8 @@ export class WaterInteractionSystem {
       );
       d.vel.set(Math.cos(ang) * radialSpeed, upSpeed, Math.sin(ang) * radialSpeed);
       d.age = 0;
-      d.maxAge = 0.38 + Math.random() * 0.42;
-      d.size = (0.015 + Math.random() * 0.028) * (0.75 + 0.4 * intensity);
+      d.maxAge = 0.34 + Math.random() * 0.34;
+      d.size = (0.009 + Math.random() * 0.015) * (0.75 + 0.35 * intensity);
     }
   }
 
@@ -238,6 +246,7 @@ export class WaterInteractionSystem {
 
     // 2. Update ballistic 3D water spray droplets
     let dirty = false;
+    let anyActive = false;
     for (let i = 0; i < this.maxDroplets; i++) {
       const d = this.droplets[i];
       if (!d.active) continue;
@@ -259,6 +268,7 @@ export class WaterInteractionSystem {
         continue;
       }
 
+      anyActive = true;
       const lifeFade = 1.0 - d.age / d.maxAge;
       const sc = d.size * (0.4 + 0.6 * lifeFade);
       this.dummy.position.copy(d.pos);
@@ -272,5 +282,6 @@ export class WaterInteractionSystem {
     if (dirty) {
       this.dropletMesh.instanceMatrix.needsUpdate = true;
     }
+    this.dropletMesh.visible = anyActive;
   }
 }

@@ -27,10 +27,14 @@ export class UnderwaterPostProcess {
   private readonly camWorld = new THREE.Matrix4();
 
   private aaEnabled = true;
-  private supersampleScale = 1.35; // Crisp supersampling on 1x displays (clamped safely to max 2.0 total DPR)
+  private supersampleScale = 1.0; // Crisp FXAA 3.11 without redundant oversampling fillrate overhead
+  public lastFrameDrawCalls = 0;
+  public lastFrameTriangles = 0;
 
   constructor(renderer: THREE.WebGLRenderer, width: number, height: number) {
     const { rtW, rtH } = this.computeTargetSize(width, height);
+    const refW = Math.max(1, Math.floor(rtW * 0.5));
+    const refH = Math.max(1, Math.floor(rtH * 0.5));
 
     const depthTexture = new THREE.DepthTexture(rtW, rtH);
     depthTexture.type = THREE.UnsignedIntType;
@@ -49,11 +53,12 @@ export class UnderwaterPostProcess {
       depthTexture
     });
 
-    const refractDepth = new THREE.DepthTexture(rtW, rtH);
+    // Half-resolution refraction pre-pass cuts GPU refraction fillrate by 75% with zero visible loss!
+    const refractDepth = new THREE.DepthTexture(refW, refH);
     refractDepth.type = THREE.UnsignedIntType;
     refractDepth.format = THREE.DepthFormat;
 
-    this.refractTarget = new THREE.WebGLRenderTarget(rtW, rtH, {
+    this.refractTarget = new THREE.WebGLRenderTarget(refW, refH, {
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
       format: THREE.RGBAFormat,
@@ -81,8 +86,12 @@ export class UnderwaterPostProcess {
       uniforms: {
         tColor: { value: this.renderTarget.texture },
         tDepth: { value: depthTexture },
+        uNoise: { value: null },
+        uHasNoise: { value: 0.0 },
+        uHazeColor: { value: new THREE.Color(0x8bcbe8) },
         uResolution: { value: new THREE.Vector2(rtW, rtH) },
         uTime: { value: 0 },
+        uFrame: { value: 0 },
         uWaveIntensity: { value: 1.0 },
         uCameraPos: { value: new THREE.Vector3() },
         uInvProjection: { value: new THREE.Matrix4() },
@@ -91,7 +100,8 @@ export class UnderwaterPostProcess {
         uFar: { value: 650.0 },
         uSunDirection: { value: new THREE.Vector3(0.35, 0.72, 0.58).normalize() },
         uSunColor: { value: new THREE.Color(0xfff4dd) },
-        uExposure: { value: 0.84 }
+        uExposure: { value: 0.84 },
+        uSurfaceWetness: { value: 0.0 }
       },
       vertexShader: /* glsl */ `
         varying vec2 vUv;
@@ -103,8 +113,12 @@ export class UnderwaterPostProcess {
       fragmentShader: /* glsl */ `
         uniform sampler2D tColor;
         uniform sampler2D tDepth;
+        uniform sampler2D uNoise;
+        uniform float uHasNoise;
+        uniform vec3 uHazeColor;
         uniform vec2 uResolution;
         uniform float uTime;
+        uniform float uFrame;
         uniform float uWaveIntensity;
         uniform vec3 uCameraPos;
         uniform mat4 uInvProjection;
@@ -114,6 +128,7 @@ export class UnderwaterPostProcess {
         uniform vec3 uSunDirection;
         uniform vec3 uSunColor;
         uniform float uExposure;
+        uniform float uSurfaceWetness;
 
         varying vec2 vUv;
 
@@ -161,8 +176,8 @@ export class UnderwaterPostProcess {
           const int STEPS = 28;
           float stepLen = marchDist / float(STEPS);
 
-          // Ultra-smooth spatial blue-noise-like offset (no visible pattern or grain)
-          float dither = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+          // Ultra-smooth spatial-temporal IGN offset (no visible pattern or grain)
+          float dither = fract(52.9829189 * fract(dot(gl_FragCoord.xy + vec2(uFrame * 13.37, uFrame * 7.91), vec2(0.06711056, 0.00583715))));
           float t = (0.35 + dither * 0.35) * stepLen;
 
           vec3 refrSun = normalize(vec3(sunDir.x * 0.72, max(sunDir.y, 0.24), sunDir.z * 0.72));
@@ -191,9 +206,10 @@ export class UnderwaterPostProcess {
           return shaftTint * accum * phase * sunElev * 0.32;
         }
 
-        // Soft 8-tap highlight bloom/halation for silky sunlit ocean glints & underwater rays
+        // Dual-radius 8-tap HDR bloom + soft atmospheric halation for sunlit glints & sunset lanterns
         vec3 sampleSoftBloom(vec2 uv) {
-          vec2 px = 2.4 / uResolution;
+          vec2 pxInner = 3.5 / uResolution;
+          vec2 pxOuter = 10.5 / uResolution;
           vec3 acc = vec3(0.0);
           vec2 dirs[8];
           dirs[0] = vec2( 1.0,  0.0);
@@ -206,11 +222,17 @@ export class UnderwaterPostProcess {
           dirs[7] = vec2(-0.707, -0.707);
 
           for (int i = 0; i < 8; i++) {
-            vec3 s = texture2D(tColor, clamp(uv + dirs[i] * px, 0.001, 0.999)).rgb;
-            vec3 bright = max(s - vec3(1.15), vec3(0.0));
-            acc += bright;
+            vec3 s1 = texture2D(tColor, clamp(uv + dirs[i] * pxInner, 0.001, 0.999)).rgb;
+            vec3 s2 = texture2D(tColor, clamp(uv + dirs[i] * pxOuter, 0.001, 0.999)).rgb;
+            float l1 = dot(s1, vec3(0.2126, 0.7152, 0.0722));
+            float l2 = dot(s2, vec3(0.2126, 0.7152, 0.0722));
+            vec3 b1 = max(s1 - vec3(0.85), vec3(0.0)) * smoothstep(0.85, 1.45, l1);
+            vec3 b2 = max(s2 - vec3(0.95), vec3(0.0)) * smoothstep(0.85, 1.45, l2);
+            acc += b1 * 0.65 + b2 * 0.35;
           }
-          return acc * (0.125 * 0.24);
+          float dusk = 1.0 - smoothstep(0.08, 0.45, uSunDirection.y);
+          float strength = mix(0.30, 0.62, dusk);
+          return acc * (0.125 * strength);
         }
 
         vec3 acesFilm(vec3 x) {
@@ -260,7 +282,15 @@ export class UnderwaterPostProcess {
             cos(vUv.x * 70.0 - uTime * 3.5)
           ) * 0.00042 * horizonHazeMask;
 
-          vec2 sampleUv = clamp(vUv + rippleOffset + vec2(0.0, meniscusDistort) + heatShimmer, 0.001, 0.999);
+          // Pure optical refractive water-film runoff right after surfacing (no opaque spots)
+          vec2 wetnessRefract = vec2(0.0);
+          if (uSurfaceWetness > 0.002 && underwaterMask < 0.35 && uHasNoise > 0.5) {
+            float drops = smoothstep(0.42, 0.72, texture2D(uNoise, vUv * vec2(2.2, 1.0) + vec2(0.0, uTime * 0.16)).a);
+            vec2 wetShift = texture2D(uNoise, vUv * vec2(3.0, 1.2) + vec2(0.0, uTime * 0.30)).rg - 0.5;
+            wetnessRefract = wetShift * 0.032 * uSurfaceWetness * drops * (1.0 - underwaterMask);
+          }
+
+          vec2 sampleUv = clamp(vUv + rippleOffset + vec2(0.0, meniscusDistort) + heatShimmer + wetnessRefract, 0.001, 0.999);
 
           float rawDepth = texture2D(tDepth, sampleUv).r;
           float linearDist;
@@ -275,26 +305,31 @@ export class UnderwaterPostProcess {
             float edgeFactor = dot(fromCenter, fromCenter) * 2.2;
             vec2 caOffset = fromCenter * (0.0032 + edgeFactor * 0.0038) * underwaterMask;
 
-            // Smooth 9-tap distance-weighted optical blur underwater
-            float blurRadius = clamp((sceneDist - 1.8) / 26.0, 0.0, 1.0) * 2.6 * underwaterMask;
+            // Smooth 7-tap Vogel golden-angle spiral blur + chromatic dispersion underwater
+            float blurRadius = clamp((sceneDist - 1.5) / 24.0, 0.0, 1.0) * 3.0 * underwaterMask;
             vec2 px = blurRadius / uResolution;
+            float spiralPhase = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 6.28318;
 
             vec3 cCenter = vec3(
               texture2D(tColor, clamp(sampleUv + caOffset, 0.001, 0.999)).r,
               texture2D(tColor, sampleUv).g,
               texture2D(tColor, clamp(sampleUv - caOffset, 0.001, 0.999)).b
             );
-            vec3 cBlur = cCenter * 0.28;
-            cBlur += texture2D(tColor, clamp(sampleUv + vec2(px.x, 0.0), 0.001, 0.999)).rgb * 0.11;
-            cBlur += texture2D(tColor, clamp(sampleUv - vec2(px.x, 0.0), 0.001, 0.999)).rgb * 0.11;
-            cBlur += texture2D(tColor, clamp(sampleUv + vec2(0.0, px.y), 0.001, 0.999)).rgb * 0.11;
-            cBlur += texture2D(tColor, clamp(sampleUv - vec2(0.0, px.y), 0.001, 0.999)).rgb * 0.11;
-            cBlur += texture2D(tColor, clamp(sampleUv + vec2(px.x, px.y), 0.001, 0.999)).rgb * 0.07;
-            cBlur += texture2D(tColor, clamp(sampleUv + vec2(-px.x, px.y), 0.001, 0.999)).rgb * 0.07;
-            cBlur += texture2D(tColor, clamp(sampleUv + vec2(px.x, -px.y), 0.001, 0.999)).rgb * 0.07;
-            cBlur += texture2D(tColor, clamp(sampleUv + vec2(-px.x, -px.y), 0.001, 0.999)).rgb * 0.07;
+            vec3 cBlur = vec3(0.0);
+            for (int i = 0; i < 7; i++) {
+              float fi = float(i);
+              float ang = fi * 2.399963 + spiralPhase;
+              float rad = sqrt((fi + 0.5) / 7.0);
+              vec2 tapUv = clamp(sampleUv + vec2(cos(ang), sin(ang)) * rad * px, 0.001, 0.999);
+              cBlur += vec3(
+                texture2D(tColor, clamp(tapUv + caOffset, 0.001, 0.999)).r,
+                texture2D(tColor, tapUv).g,
+                texture2D(tColor, clamp(tapUv - caOffset, 0.001, 0.999)).b
+              );
+            }
+            cBlur /= 7.0;
 
-            vec3 uwCol = mix(cCenter, cBlur, clamp(blurRadius * 0.58, 0.0, 0.88));
+            vec3 uwCol = mix(cCenter, cBlur, clamp(blurRadius * 0.55, 0.0, 0.85));
 
             // Exponential Beer-Lambert optical absorption
             float camDepth = max(0.0, waveAtLens - uCameraPos.y);
@@ -320,6 +355,14 @@ export class UnderwaterPostProcess {
             color = texture2D(tColor, sampleUv).rgb;
           }
 
+          // Height-attenuated coastal aerial haze for distant headlands and beach perspective
+          if (underwaterMask < 0.999 && rawDepth < 0.9999) {
+            float aerialDist = max(sceneDist - 18.0, 0.0);
+            float heightAtten = exp(-max(worldPos.y, 0.0) * 0.055);
+            float aerialHaze = (1.0 - exp(-aerialDist * 0.0022)) * 0.42 * heightAtten * (1.0 - underwaterMask);
+            color = mix(color, uHazeColor, clamp(aerialHaze, 0.0, 0.48));
+          }
+
           // Subtle HDR sun-glint bloom / atmospheric softness
           color += sampleSoftBloom(sampleUv);
 
@@ -336,6 +379,10 @@ export class UnderwaterPostProcess {
           vec2 vigUv = vUv * (1.0 - vUv.yx);
           float vig = pow(clamp(vigUv.x * vigUv.y * 16.0, 0.0, 1.0), 0.12 + 0.14 * underwaterMask);
           color *= mix(0.86, 1.0, vig);
+
+          // 1/255 dithering to eliminate sky/ocean 8-bit banding
+          float dith = fract(sin(dot(gl_FragCoord.xy + uFrame, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+          color = clamp(color + dith / 255.0, 0.0, 1.0);
 
           // Store perceptual luma in alpha for FXAA 3.11 edge detection pass
           float luma = dot(color, vec3(0.299, 0.587, 0.114));
@@ -529,10 +576,15 @@ export class UnderwaterPostProcess {
   public setSize(width: number, height: number): void {
     const { rtW, rtH } = this.computeTargetSize(width, height);
     this.renderTarget.setSize(rtW, rtH);
-    this.refractTarget.setSize(rtW, rtH);
+    this.refractTarget.setSize(Math.max(1, Math.floor(rtW * 0.5)), Math.max(1, Math.floor(rtH * 0.5)));
     this.compositeTarget.setSize(rtW, rtH);
     this.postMaterial.uniforms.uResolution.value.set(rtW, rtH);
     this.fxaaMaterial.uniforms.uTexelSize.value.set(1 / rtW, 1 / rtH);
+  }
+
+  public setNoiseTexture(tex: THREE.DataTexture): void {
+    this.postMaterial.uniforms.uNoise.value = tex;
+    this.postMaterial.uniforms.uHasNoise.value = 1.0;
   }
 
   public render(
@@ -543,13 +595,38 @@ export class UnderwaterPostProcess {
     elapsedTime: number,
     waveIntensity: number,
     sunDirection: THREE.Vector3,
-    sunColor: THREE.Color
+    sunColor: THREE.Color,
+    cullInRefraction?: THREE.Object3D[],
+    surfaceWetness = 0.0,
+    fogColor?: THREE.Color
   ): void {
-    // Stage 0: Capture pre-water scene color & depth for true optical ocean refraction
+    // Stage 0: Fast half-res pre-water scene capture (hiding inland buildings/foliage for massive FPS gain!)
     ocean.mesh.visible = false;
+    const prevVis: boolean[] = [];
+    if (cullInRefraction) {
+      for (let i = 0; i < cullInRefraction.length; i++) {
+        prevVis.push(cullInRefraction[i].visible);
+        cullInRefraction[i].visible = false;
+      }
+    }
+    const prevShadows = renderer.shadowMap.autoUpdate;
+    renderer.shadowMap.autoUpdate = false;
+
+    let totalDraws = 0;
+    let totalTris = 0;
+
     renderer.setRenderTarget(this.refractTarget);
     renderer.clear(true, true, false);
     renderer.render(scene, camera);
+    totalDraws += renderer.info.render.calls;
+    totalTris += renderer.info.render.triangles;
+
+    renderer.shadowMap.autoUpdate = prevShadows;
+    if (cullInRefraction) {
+      for (let i = 0; i < cullInRefraction.length; i++) {
+        cullInRefraction[i].visible = prevVis[i];
+      }
+    }
     ocean.mesh.visible = true;
 
     ocean.setRefractionTextures(
@@ -559,10 +636,12 @@ export class UnderwaterPostProcess {
       this.renderTarget.height
     );
 
-    // Stage 1: Render supersampled 3D scene (with refracting ocean & splashes) into HDR + depth target
+    // Stage 1: Render 3D scene (with refracting ocean & splashes) into HDR + depth target
     renderer.setRenderTarget(this.renderTarget);
     renderer.clear(true, true, false);
     renderer.render(scene, camera);
+    totalDraws += renderer.info.render.calls;
+    totalTris += renderer.info.render.triangles;
 
     // Stage 2: Waterline meniscus, underwater optics, volumetric god rays, bloom & ACES -> compositeTarget
     camera.updateMatrixWorld();
@@ -571,6 +650,7 @@ export class UnderwaterPostProcess {
 
     const u = this.postMaterial.uniforms;
     u.uTime.value = elapsedTime;
+    u.uFrame.value = (u.uFrame.value + 1) % 64;
     u.uWaveIntensity.value = waveIntensity;
     u.uCameraPos.value.copy(camera.position);
     u.uInvProjection.value.copy(this.invProj);
@@ -579,13 +659,24 @@ export class UnderwaterPostProcess {
     u.uFar.value = camera.far;
     u.uSunDirection.value.copy(sunDirection);
     u.uSunColor.value.copy(sunColor);
+    u.uSurfaceWetness.value = surfaceWetness;
+    if (fogColor) {
+      u.uHazeColor.value.copy(fogColor);
+    }
 
     renderer.setRenderTarget(this.compositeTarget);
     renderer.render(this.postScene, this.postCamera);
+    totalDraws += renderer.info.render.calls;
+    totalTris += renderer.info.render.triangles;
 
     // Stage 3: FXAA 3.11 edge smoothing & sub-pixel AA directly to screen
     renderer.setRenderTarget(null);
     renderer.render(this.fxaaScene, this.postCamera);
+    totalDraws += renderer.info.render.calls;
+    totalTris += renderer.info.render.triangles;
+
+    this.lastFrameDrawCalls = totalDraws;
+    this.lastFrameTriangles = totalTris;
   }
 
   public dispose(): void {

@@ -9,7 +9,8 @@ function createAtmosphericSkyMaterial(): THREE.ShaderMaterial {
       uZenithColor: { value: new THREE.Color(0x0b4c9c) },
       uHorizonColor: { value: new THREE.Color(0x6bb8e6) },
       uSunColor: { value: new THREE.Color(0xfff3dc) },
-      uTime: { value: 0 }
+      uTime: { value: 0 },
+      uShowSun: { value: 1.0 }
     },
     vertexShader: /* glsl */ `
       varying vec3 vWorldDir;
@@ -25,6 +26,7 @@ function createAtmosphericSkyMaterial(): THREE.ShaderMaterial {
       uniform vec3 uHorizonColor;
       uniform vec3 uSunColor;
       uniform float uTime;
+      uniform float uShowSun;
       varying vec3 vWorldDir;
 
       float hash21(vec2 p) {
@@ -70,20 +72,40 @@ function createAtmosphericSkyMaterial(): THREE.ShaderMaterial {
         float lowSun = 1.0 - smoothstep(0.08, 0.52, sunDir.y);
         sky += uSunColor * mieGlow * (0.65 + 0.85 * lowSun);
 
-        // Crisp glowing solar disc with soft corona
+        // Crisp glowing solar disc with soft corona (hidden on offscreen IBL env capture via uShowSun)
         float sunDisc = smoothstep(0.9991, 0.99965, dot(dir, sunDir));
         float sunCorona = pow(sunCos, 320.0) * 1.4;
-        sky += uSunColor * (sunCorona + sunDisc * 4.2);
+        sky += uSunColor * (sunCorona + sunDisc * 4.2) * uShowSun;
 
-        // Delicate high-altitude sunlit coastal cirrus clouds
-        if (dir.y > 0.03) {
-          vec2 cloudUv = dir.xz / (dir.y + 0.18) * 1.15 + vec2(uTime * 0.004, -uTime * 0.002);
+        // Subtle twilight starfield twinkling gently at low sunset elevations (hidden during day)
+        float twilight = smoothstep(0.20, 0.05, sunDir.y);
+        if (twilight > 0.01 && dir.y > 0.10) {
+          vec2 starCell = floor((dir.xz / (dir.y + 0.25)) * 135.0);
+          float h = hash21(starCell);
+          if (h > 0.9955) {
+            float twinkle = 0.55 + 0.45 * sin(uTime * (2.2 + fract(h * 73.1) * 3.5) + h * 90.0);
+            float starAlpha = smoothstep(0.10, 0.35, dir.y) * twilight * twinkle * 0.85;
+            sky += vec3(0.95, 0.97, 1.0) * starAlpha;
+          }
+        }
+
+        // Layered sunlit coastal cumulus + backlit golden silver-lining rim scatter
+        if (dir.y > 0.025) {
+          vec2 cloudUv = dir.xz / (dir.y + 0.17) * 1.15 + vec2(uTime * 0.0042, -uTime * 0.0022);
           float c1 = fbmClouds(cloudUv);
-          float c2 = fbmClouds(cloudUv * 2.3 + vec2(4.1, -2.7));
-          float cloudMask = smoothstep(0.56, 0.84, c1 * 0.72 + c2 * 0.35);
-          cloudMask *= smoothstep(0.03, 0.22, dir.y) * smoothstep(0.96, 0.45, dir.y);
-          vec3 cloudLit = mix(vec3(0.85, 0.90, 0.96), uSunColor * 1.22, 0.35 + 0.55 * pow(sunCos, 3.0) + 0.25 * lowSun);
-          sky = mix(sky, cloudLit, cloudMask * 0.48);
+          float c2 = fbmClouds(cloudUv * 2.35 + vec2(4.1, -2.7));
+          float density = c1 * 0.72 + c2 * 0.35;
+          float cloudMask = smoothstep(0.54, 0.84, density);
+          float silverRim = smoothstep(0.50, 0.63, density) * (1.0 - smoothstep(0.66, 0.84, density));
+          float horizonFade = smoothstep(0.025, 0.20, dir.y) * smoothstep(0.97, 0.42, dir.y);
+          cloudMask *= horizonFade;
+          silverRim *= horizonFade;
+
+          vec3 cloudShadow = mix(vec3(0.72, 0.80, 0.90), vec3(0.55, 0.36, 0.42), lowSun);
+          vec3 cloudSun = mix(vec3(0.98, 0.99, 1.0), uSunColor * 1.32, 0.32 + 0.55 * pow(sunCos, 2.5) + 0.35 * lowSun);
+          vec3 cloudCol = mix(cloudShadow, cloudSun, smoothstep(0.52, 0.86, c1));
+          cloudCol += uSunColor * silverRim * (0.28 + 0.85 * pow(sunCos, 5.0)) * (0.45 + 0.75 * lowSun);
+          sky = mix(sky, cloudCol, cloudMask * 0.58);
         }
 
         // Below horizon dark coastal bounce for clean PMREM reflections
@@ -112,10 +134,13 @@ export class AtmosphereSystem {
   public readonly skyHorizon = new THREE.Color(0x6bb8e6);
   public readonly fogColor = new THREE.Color(0x8bcbe8);
 
+  private readonly renderer: THREE.WebGLRenderer;
   private readonly skyMat: THREE.ShaderMaterial;
   private readonly envSkyMat: THREE.ShaderMaterial;
   private readonly pmremGenerator: THREE.PMREMGenerator;
   private readonly envScene: THREE.Scene;
+  private readonly cubeRT: THREE.WebGLCubeRenderTarget;
+  private readonly cubeCam: THREE.CubeCamera;
   private envRenderTarget: THREE.WebGLRenderTarget | null = null;
   private lastEnvUpdateTime = -10;
   private envDirty = true;
@@ -123,7 +148,12 @@ export class AtmosphereSystem {
 
   private sunProgress = 48;
 
+  public get skyCubeTexture(): THREE.CubeTexture {
+    return this.cubeRT.texture;
+  }
+
   constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene) {
+    this.renderer = renderer;
     this.scene = scene;
 
     const skyGeo = new THREE.SphereGeometry(520, 32, 20);
@@ -132,13 +162,21 @@ export class AtmosphereSystem {
     this.sky.frustumCulled = false;
     scene.add(this.sky);
 
-    // Offscreen sky scene for clean PMREM IBL environment reflection capture
+    // Offscreen sky scene for clean PMREM IBL & CubeTexture sky reflection capture
     this.pmremGenerator = new THREE.PMREMGenerator(renderer);
     this.pmremGenerator.compileEquirectangularShader();
     this.envScene = new THREE.Scene();
     this.envSkyMat = createAtmosphericSkyMaterial();
+    this.envSkyMat.uniforms.uShowSun.value = 0.0;
     const envMesh = new THREE.Mesh(new THREE.SphereGeometry(60, 24, 16), this.envSkyMat);
     this.envScene.add(envMesh);
+
+    this.cubeRT = new THREE.WebGLCubeRenderTarget(128, {
+      type: THREE.HalfFloatType,
+      generateMipmaps: true,
+      minFilter: THREE.LinearMipmapLinearFilter
+    });
+    this.cubeCam = new THREE.CubeCamera(1, 500, this.cubeRT);
 
     // Primary sunlight with crisp PCF soft shadows
     this.sunLight = new THREE.DirectionalLight(0xfff5e4, 2.4);
@@ -174,6 +212,15 @@ export class AtmosphereSystem {
     return 'Sunset';
   }
 
+  public getClockLabel(): string {
+    const mins = Math.round(THREE.MathUtils.lerp(6 * 60 + 10, 19 * 60 + 35, this.sunProgress / 100));
+    const h24 = Math.floor(mins / 60);
+    const m = mins % 60;
+    const ampm = h24 >= 12 ? 'PM' : 'AM';
+    const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+    return `${h12}:${m.toString().padStart(2, '0')} ${ampm} · ${this.getLabel()}`;
+  }
+
   public setSunProgress(progress: number, immediateEnv = false): void {
     this.sunProgress = THREE.MathUtils.clamp(progress, 0, 100);
     const t = this.sunProgress / 100;
@@ -181,7 +228,7 @@ export class AtmosphereSystem {
     const elevationDeg =
       t < 0.5
         ? THREE.MathUtils.lerp(11, 58, Math.sin(t * Math.PI))
-        : THREE.MathUtils.lerp(58, 6.5, Math.pow((t - 0.5) * 2.0, 1.15));
+        : THREE.MathUtils.lerp(58, 3.2, Math.pow((t - 0.5) * 2.0, 1.35));
     const azimuthDeg = THREE.MathUtils.lerp(-54, 46, t);
 
     const phi = THREE.MathUtils.degToRad(90 - elevationDeg);
@@ -239,13 +286,15 @@ export class AtmosphereSystem {
     if (!this.envDirty) return;
     if (elapsedTime - this.lastEnvUpdateTime < 0.14 && this.envRenderTarget) return;
 
+    this.cubeCam.update(this.renderer, this.envScene);
+
     const nextRT = this.pmremGenerator.fromScene(this.envScene, 0.035);
     if (this.envRenderTarget) {
       this.envRenderTarget.dispose();
     }
     this.envRenderTarget = nextRT;
     this.scene.environment = nextRT.texture;
-    this.scene.environmentIntensity = 0.62;
+    this.scene.environmentIntensity = 0.78;
     this.lastEnvUpdateTime = elapsedTime;
     this.envDirty = false;
   }
@@ -268,6 +317,7 @@ export class AtmosphereSystem {
 
   public dispose(): void {
     this.envRenderTarget?.dispose();
+    this.cubeRT.dispose();
     this.pmremGenerator.dispose();
     this.skyMat.dispose();
     this.envSkyMat.dispose();

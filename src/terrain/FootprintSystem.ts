@@ -8,12 +8,12 @@ import { GERSTNER_GLSL } from '../ocean/wavePhysics';
  * render crisp, detailed, and realistic across the entire wide beach!
  */
 export const FOOTPRINT_BOUNDS = {
-  minX: -72,
-  maxX: 72,
-  minZ: -56,
-  maxZ: 36,
-  width: 144,
-  depth: 92,
+  minX: -88,
+  maxX: 88,
+  minZ: -52,
+  maxZ: 34,
+  width: 176,
+  depth: 86,
   resolution: 2048
 };
 
@@ -49,6 +49,7 @@ export class FootprintSystem {
 
   private queue: QueuedStamp[] = [];
   private totalStamps = 0;
+  private decayAccumDt = 0;
 
   constructor(renderer: THREE.WebGLRenderer) {
     const supportsHalfFloat =
@@ -289,12 +290,20 @@ export class FootprintSystem {
     elapsedTime: number,
     waveIntensity: number
   ): void {
+    // Throttle 2048x2048 ping-pong decay pass to ~30Hz unless stamps are queued (cuts GPU fill cost in half!)
+    this.decayAccumDt += dt;
+    if (this.queue.length === 0 && this.decayAccumDt < 0.032) {
+      return;
+    }
+    const stepDt = this.decayAccumDt;
+    this.decayAccumDt = 0;
+
     const prevTarget = renderer.getRenderTarget();
     const prevAutoClear = renderer.autoClear;
 
     this.decayMaterial.uniforms.uPrevMap.value = this.readTarget.texture;
     this.decayMaterial.uniforms.uTime.value = elapsedTime;
-    this.decayMaterial.uniforms.uDt.value = dt;
+    this.decayMaterial.uniforms.uDt.value = stepDt;
     this.decayMaterial.uniforms.uWaveIntensity.value = waveIntensity;
 
     renderer.autoClear = false;
